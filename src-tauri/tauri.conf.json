@@ -1,0 +1,40 @@
+{
+  "productName": "HyesRead",
+  "version": "0.1.0",
+  "identifier": "com.hyes.read",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../out"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "HyesRead",
+        "width": 1200,
+        "height": 800
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://* https://* ws://* wss://*; img-src 'self' data: blob:; media-src 'self' data: blob: http://* https://*;",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "fileAssociations": [
+      {
+        "ext": ["epub", "mobi", "azw3", "pdf", "cbz", "txt"],
+        "name": "E-book Document",
+        "description": "Electronic book file managed by HyesRead",
+        "role": "Viewer"
+      }
+    ]
+  }
+}

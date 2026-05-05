@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HyesRead Foliate Engine</title>
+    <style>
+        /* 极限压榨 WebView 视口，干掉任何多余的滚动条 */
+        body { margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; background: #fafafa; }
+        foliate-view { width: 100%; height: 100%; display: block; }
+    </style>
+</head>
+<body>
+    <script type="module">
+        // 核心导入：直接调用 foliate-js
+        import './foliate-js/view.js';
+        
+        const view = document.createElement('foliate-view');
+        document.body.append(view);
+
+        // 建立与 Flutter 的通讯信道
+        window.loadBook = async (bookUrl) => {
+            try {
+                // 触发 foliate-js 底层 VFS 懒加载引擎
+                await view.open(bookUrl);
+            } catch (e) {
+                console.error("Foliate Engine crashed during loading:", e);
+                // 这里可通过 js 桥接发消息给 Flutter 报错
+            }
+        };
+
+        // 开放配置接口供 Flutter 调用（例如修改主题、字体）
+        window.setTheme = (bgColor, textColor) => {
+            view.style.background = bgColor;
+            view.style.color = textColor;
+        };
+    </script>
+</body>
+</html>

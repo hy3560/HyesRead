@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-library-commands"
+description = "允许访问图书馆扫描、文件导入和 AI/TTS 模型相关的自定义命令"
+commands.allow = [
+    "scan_library",
+    "import_files",
+    "fetch_remote_models"
+]

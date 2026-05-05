@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/permission-schema.json",
+  "identifier": "allow-library-commands",
+  "description": "允许前端调用我的 Rust 核心功能",
+  "commands": [
+    "scan_library",
+    "import_files",
+    "fetch_remote_models",
+    "delete_book",
+    "open_book"
+  ]
+}

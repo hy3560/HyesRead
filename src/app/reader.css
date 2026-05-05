@@ -1,0 +1,37 @@
+/* 自定义字体张力定义 */
+@font-face {
+  font-family: 'BookRef';
+  src: local('Georgia'), local('PingFang SC');
+  font-display: swap;
+}
+
+.reader-container {
+  font-family: 'BookRef', serif;
+  line-height: 1.8;
+  letter-spacing: 0.015em;
+  font-size: 1.125rem;
+  color: #d4d4d8;
+  /* 解决代码语法高亮 */
+  --shiki-color-text: #d4d4d8;
+  --shiki-color-background: transparent;
+}
+
+/* 分页模式模拟 */
+.paged-view {
+  column-width: 40vw;
+  column-gap: 8vw;
+  height: 80vh;
+  padding: 0 4vw;
+}
+
+/* 滚动模式模拟 */
+.scrolling-view {
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+/* 翻译即时模式背景 */
+.translation-popover {
+  background: linear-gradient(135deg, rgba(20,20,20,0.9), rgba(40,40,40,0.9));
+  box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+}
