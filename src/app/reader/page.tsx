@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { invoke, isDesktop, readValue, writeValue } from "../../lib/platform";
+import { invoke, isDesktop, updateValue, writeValue } from "../../lib/platform";
 import { getBrowserBook, isBrowserBook } from "../../lib/browserBooks";
 
 export default function ReaderPage() {
@@ -31,19 +31,35 @@ function ReaderContent() {
     let reportTime: (() => void) | undefined;
     const key = `hyes-reader-location:${path}`;
     let lastCheckAt = Date.now();
-    const flushReadingTime = async () => {
+    let unrecordedMs = 0;
+    let flushQueue = Promise.resolve();
+    const flushReadingTime = (assumeVisible = false) => {
       const now = Date.now();
-      const minutes = document.visibilityState === "visible" ? Math.floor((now - lastCheckAt) / 60_000) : 0;
+      if (assumeVisible || document.visibilityState === "visible") unrecordedMs += Math.max(0, now - lastCheckAt);
       lastCheckAt = now;
+      const minutes = Math.floor(unrecordedMs / 60_000);
       if (minutes < 1) return;
-      try {
-        const sessions = await readValue<{ date: string; duration: number; bookPath: string }[]>("hyes_stats.json", "sessions", []);
-        const date = new Date();
-        sessions.push({ date: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`, duration: minutes, bookPath: path });
-        await writeValue("hyes_stats.json", "sessions", sessions);
-      } catch (e) { console.error("保存阅读时长失败", e); }
+      unrecordedMs -= minutes * 60_000;
+      flushQueue = flushQueue.then(async () => {
+          const date = new Date();
+          const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+          await updateValue<{ date: string; duration: number; bookPath: string }[]>("hyes_stats.json", "sessions", [], sessions => {
+            const last = sessions[sessions.length - 1];
+            if (last?.date === day && last.bookPath === path) last.duration += minutes;
+            else sessions.push({ date: day, duration: minutes, bookPath: path });
+            return sessions;
+          });
+        }).catch(error => {
+          unrecordedMs += minutes * 60_000;
+          console.error("保存阅读时长失败", error);
+        });
     };
-    reportTime = () => void flushReadingTime();
+    reportTime = () => flushReadingTime();
+    const handleVisibilityChange = () => {
+      const wasVisible = document.visibilityState === "hidden";
+      flushReadingTime(wasVisible);
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("pagehide", reportTime);
     timer = setInterval(reportTime, 60_000);
     let cancelled = false;
@@ -86,6 +102,8 @@ function ReaderContent() {
       } else if (event.data?.type === "hyesread:ready") {
         const saved = localStorage.getItem(key);
         frame.contentWindow?.postMessage({ type: "hyesread:restore", location: saved ? JSON.parse(saved) : null }, "*");
+      } else if (event.data?.type === "hyesread:error") {
+        setError(`无法打开这本书：${event.data.message || "文件格式或内容无效"}`);
       }
     };
     window.addEventListener("message", onMessage);
@@ -100,7 +118,9 @@ function ReaderContent() {
 
     return () => {
       cancelled = true;
+      flushReadingTime();
       if (timer) clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (onMessage) window.removeEventListener("message", onMessage);
       if (reportTime) window.removeEventListener("pagehide", reportTime);
       if (onLoad) frame.removeEventListener("load", onLoad);

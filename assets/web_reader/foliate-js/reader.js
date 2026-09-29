@@ -209,7 +209,13 @@ class Reader {
 }
 
 const showError = error => {
-    const target = $('#drop-target')
+    let target = $('#drop-target')
+    if (!target) {
+        target = document.createElement('div')
+        target.id = 'drop-target'
+        target.className = 'filter'
+        target.innerHTML = '<div><h1></h1><p></p></div>'
+    }
     if (!target.isConnected) document.body.append(target)
     target.style.visibility = 'visible'
     target.querySelector('h1').textContent = '无法打开这本书'

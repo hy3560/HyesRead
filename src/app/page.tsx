@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { invoke, isDesktop, readValue, writeValue } from "../lib/platform";
+import { invoke, isDesktop, readValue, updateValue, writeValue } from "../lib/platform";
 import { getBrowserBook, isBrowserBook, removeBrowserBook, saveBrowserBook } from "../lib/browserBooks";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useRouter } from "next/navigation";
@@ -157,7 +157,10 @@ export default function HyesReadMaster() {
         
         if (discretePaths && discretePaths.length > 0) {
           if (isDesktop()) {
-            invoke<Book[]>("import_files", { filePaths: discretePaths }).then(res => setBooks(prev => mergeBooks(prev, res))).catch(console.error);
+            invoke<Book[]>("import_files", { filePaths: discretePaths }).then(res => setBooks(prev => mergeBooks(prev, res))).catch(error => {
+              console.error("已导入文件恢复失败", error);
+              setOperationError(`无法恢复已导入的书籍：${String(error)}`);
+            });
           } else {
             const restored = await Promise.all(discretePaths.filter(isBrowserBook).map(async path => {
               const file = await getBrowserBook(path);
@@ -171,7 +174,10 @@ export default function HyesReadMaster() {
         setSessions(storedSessions);
 
         if (path) handleScan(path);
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.error("书架读取失败", e);
+        setOperationError(`无法读取本机书架：${String(e)}`);
+      }
     })();
   }, []);
 
@@ -180,6 +186,7 @@ export default function HyesReadMaster() {
     setIsScanning(true);
     try {
       const result: Book[] = await invoke("scan_library", { folderPath: targetPath });
+      await writeValue("hyes_master.json", "library_path", targetPath);
       setBooks(prev => {
           const normalizedRoot = targetPath.replace(/[\\/]+$/, "").toLocaleLowerCase();
           const insideRoot = (path: string) => {
@@ -188,7 +195,6 @@ export default function HyesReadMaster() {
           };
           return mergeBooks(prev.filter(book => !insideRoot(book.path)), result);
       });
-      await writeValue("hyes_master.json", "library_path", targetPath);
     } catch (e: any) {
       console.error(e);
       setOperationError(`扫描书库失败：${String(e)}`);
@@ -201,15 +207,12 @@ export default function HyesReadMaster() {
     setIsScanning(true);
     try {
         const result: Book[] = await invoke("import_files", { filePaths: paths });
+        await updateValue<string[]>("hyes_master.json", "discrete_files", [], existing => Array.from(new Set([...existing, ...paths])));
         setBooks(prev => {
             const map = new Map(prev.map(b => [b.path, b]));
             result.forEach(b => map.set(b.path, b));
             return Array.from(map.values());
         });
-        
-        const existingPaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
-        const newPaths = Array.from(new Set([...existingPaths, ...paths]));
-        await writeValue("hyes_master.json", "discrete_files", newPaths);
     } catch (e: any) {
         console.error(e);
         setOperationError(`文件导入失败：${String(e)}`);
@@ -220,32 +223,42 @@ export default function HyesReadMaster() {
 
   const handleOpenBook = async (path: string) => {
     setOperationError("");
-    if (isDesktop()) {
-      try { await invoke("prepare_book_read", { path }); }
-      catch (e) { console.error(e); setOperationError(`无法打开这本书：${String(e)}`); return; }
-    }
-    await writeValue("hyes_master.json", "last_opened_book", path);
-    setLastOpenedBook(path);
-    router.push(`/reader?path=${encodeURIComponent(path)}`);
-  };
-
-  const handleDeleteBook = async (path: string) => {
-    setBooks(prev => prev.filter(bk => bk.path !== path));
     try {
-      const existingPaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
-      if (existingPaths.includes(path)) {
-        await writeValue("hyes_master.json", "discrete_files", existingPaths.filter(p => p !== path));
-      }
-    } catch(e) { console.error("清理散装列表失败", e); }
+      if (isDesktop()) await invoke("prepare_book_read", { path });
+      await writeValue("hyes_master.json", "last_opened_book", path);
+      setLastOpenedBook(path);
+      router.push(`/reader?path=${encodeURIComponent(path)}`);
+    } catch (e) {
+      console.error(e);
+      setOperationError(`无法打开这本书：${String(e)}`);
+    }
   };
 
   const handleRemoveBook = async (path: string) => {
-    setBooks(prev => prev.filter(book => book.path !== path));
     try {
-      const existingPaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
-      await writeValue("hyes_master.json", "discrete_files", existingPaths.filter(item => item !== path));
-    } catch (e) { console.error("从书库移除失败", e); }
-    if (isBrowserBook(path)) await removeBrowserBook(path);
+      await updateValue<string[]>("hyes_master.json", "discrete_files", [], paths => paths.filter(item => item !== path));
+      if (isBrowserBook(path)) {
+        try {
+          await removeBrowserBook(path);
+        } catch (error) {
+          await updateValue<string[]>("hyes_master.json", "discrete_files", [], paths => Array.from(new Set([...paths, path])));
+          throw error;
+        }
+      }
+      setBooks(prev => prev.filter(book => book.path !== path));
+      if (lastOpenedBook === path) {
+        try {
+          await writeValue("hyes_master.json", "last_opened_book", "");
+          setLastOpenedBook("");
+        } catch (error) {
+          console.error("已移除书籍的继续阅读记录未能清理", error);
+          setOperationError(`书籍已从书架移除，但继续阅读记录未能清理：${String(error)}`);
+        }
+      }
+    } catch (e) {
+      console.error("从书架移除失败", e);
+      setOperationError(`无法从书架移除：${String(e)}`);
+    }
   };
 
   return (
@@ -278,6 +291,8 @@ export default function HyesReadMaster() {
           
           <div className="flex shrink-0 items-center gap-4 max-[640px]:gap-2">
                 <button onClick={async () => {
+                setOperationError("");
+                try {
                 if (!isDesktop()) {
                   const chosen = await new Promise<File[]>((resolve) => {
                     const input = document.createElement("input"); input.type = "file"; input.multiple = true; input.accept = ".epub,.pdf,.mobi,.azw3,.kf8,.fb2,.fbz,.cbz,.txt,.md";
@@ -289,9 +304,8 @@ export default function HyesReadMaster() {
                     const url = `browser-book:${crypto.randomUUID()}`;
                     await saveBrowserBook(url, file);
                     const book: Book = { title: file.name.replace(/\.[^.]+$/, ""), author: "", path: url, format: file.name.split(".").pop()?.toUpperCase() || "BOOK", size: file.size / 1048576, cover: null, isFile: true };
+                    await updateValue<string[]>("hyes_master.json", "discrete_files", [], existing => Array.from(new Set([...existing, url])));
                     setBooks(prev => [book, ...prev.filter(item => item.path !== url)]);
-                    const existing = await readValue<string[]>("hyes_master.json", "discrete_files", []);
-                    await writeValue("hyes_master.json", "discrete_files", Array.from(new Set([...existing, url])));
                   }
                   return;
                 }
@@ -301,14 +315,24 @@ export default function HyesReadMaster() {
                     filters: [{ name: 'Books', extensions: ['epub', 'mobi', 'azw3', 'kf8', 'pdf', 'txt', 'md', 'cbz', 'fb2', 'fbz'] }]
                 });
                 if (paths && Array.isArray(paths)) handleImportFiles(paths as string[]);
+                } catch (e) {
+                  console.error("文件添加失败", e);
+                  setOperationError(`文件添加失败：${String(e)}`);
+                }
               }} aria-label="添加文件" className="flex items-center gap-2 bg-white/5 text-zinc-300 border border-white/10 px-5 py-2.5 rounded-2xl font-bold text-xs hover:bg-white/10 hover:text-white transition-all z-20 max-[640px]:h-11 max-[640px]:w-11 max-[640px]:justify-center max-[640px]:p-0">
                 <FilePlus size={16} />
                 <span className="max-[640px]:hidden">添加文件</span>
             </button>
 
             {isDesktop() && <button onClick={async () => {
+                setOperationError("");
+                try {
                 const p = await openDialog({ directory: true });
                 if (p) handleScan(p as string);
+                } catch (e) {
+                  console.error("目录选择失败", e);
+                  setOperationError(`目录选择失败：${String(e)}`);
+                }
               }} aria-label="导入书库" className="flex items-center gap-2 bg-white text-black px-5 py-2.5 rounded-2xl font-black text-xs hover:bg-orange-500 hover:text-white transition-all z-20 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_20px_rgba(249,115,22,0.4)] max-[640px]:h-11 max-[640px]:w-11 max-[640px]:justify-center max-[640px]:p-0">
                 <FolderPlus size={16} />
                 <span className="max-[640px]:hidden">导入书库</span>
@@ -551,7 +575,7 @@ function BookCard({ book, onOpen, onDelete, onError }: { book: Book, onOpen: (pa
         <h3 className="text-[10px] font-bold mt-4 line-clamp-1 text-zinc-500 group-hover:text-white transition-colors">{book.title}</h3>
       </button>
       <div className="absolute top-2 left-2 z-20 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 [@media(max-width:640px)]:opacity-100">
-        <button type="button" aria-label={`从书架移除《${book.title}》`} onClick={() => onDelete(book.path)} className="rounded-full bg-zinc-800/90 p-2 text-white shadow-xl hover:bg-zinc-700"><BookIcon size={12} /></button>
+        <button type="button" aria-label={`从书架移除《${book.title}》`} onClick={e => { e.stopPropagation(); void onDelete(book.path); }} className="rounded-full bg-zinc-800/90 p-2 text-white shadow-xl hover:bg-zinc-700"><BookIcon size={12} /></button>
         <button
           type="button"
           aria-label={`永久删除《${book.title}》文件`}

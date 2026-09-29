@@ -129,3 +129,66 @@ test("keeps uploaded text on the shelf after reload and reads Chinese text", asy
   await expect(textFrame.locator("article")).toContainText("本机阅读与进度恢复。");
   expect(runtimeErrors).toEqual([]);
 });
+
+test("removes a browser book only after its shelf entry is saved", async ({ page }) => {
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles({
+    name: "待移除书籍.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("移除后不再出现在书架。", "utf8"),
+  });
+
+  const book = page.getByRole("button", { name: "打开《待移除书籍》" });
+  await expect(book).toBeVisible();
+  await page.getByRole("button", { name: "从书架移除《待移除书籍》" }).click();
+  await expect(book).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "打开《待移除书籍》" })).toHaveCount(0);
+});
+
+test("shows a storage error instead of claiming a book was added", async ({ page }) => {
+  await page.addInitScript(() => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key === "hyes:hyes_master.json") throw new DOMException("Storage is full", "QuotaExceededError");
+      return setItem.call(this, key, value);
+    };
+  });
+
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles({
+    name: "无法保存.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("storage failure", "utf8"),
+  });
+
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "文件添加失败" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开《无法保存》" })).toHaveCount(0);
+});
+
+test("reports an unreadable book in the app instead of hiding the reader error", async ({ page }) => {
+  const diagnostics: string[] = [];
+  page.on("console", message => diagnostics.push(`console:${message.type()}:${message.text()}`));
+  page.on("pageerror", error => diagnostics.push(`pageerror:${error.message}`));
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles({
+    name: "损坏的书籍.epub",
+    mimeType: "application/epub+zip",
+    buffer: Buffer.from("not an epub archive", "utf8"),
+  });
+
+  await page.getByRole("button", { name: "打开《损坏的书籍》" }).click();
+  await expect(page.locator('span[role="alert"]')).toContainText("无法打开这本书", { timeout: 10_000 }).catch(async error => {
+    const frames = await Promise.all(page.frames().map(async frame => ({ url: frame.url(), text: (await frame.locator("body").innerText().catch(() => "")).slice(0, 300) })));
+    throw new Error(`${error.message}\nDiagnostics: ${diagnostics.join("\n")}\nFrames: ${JSON.stringify(frames)}`);
+  });
+});
