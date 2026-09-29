@@ -40,18 +40,6 @@ function stopProcess(child) {
   spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
 }
 
-async function choosePort() {
-  const server = net.createServer();
-  await new Promise((resolvePromise, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolvePromise);
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Could not reserve a WebView2 debug port.");
-  await new Promise((resolvePromise, reject) => server.close(error => error ? reject(error) : resolvePromise()));
-  return address.port;
-}
-
 async function waitForDebugEndpoint(port, child, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -108,6 +96,41 @@ async function restoreStore() {
   }
 }
 
+async function choosePort() {
+  const server = net.createServer();
+  await new Promise((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Could not reserve a WebView2 debug port.");
+  await new Promise((resolvePromise, reject) => server.close(error => error ? reject(error) : resolvePromise()));
+  return address.port;
+}
+
+function createAcceptanceConfig(port) {
+  return JSON.stringify({
+    app: {
+      windows: [{ label: "main", additionalBrowserArgs: `--remote-debugging-port=${port}` }],
+    },
+  });
+}
+
+function runBuildWithAcceptanceConfig(configPath) {
+  const command = process.platform === "win32" ? "cmd.exe" : "pnpm";
+  const args = process.platform === "win32"
+    ? ["/d", "/s", "/c", `pnpm exec tauri build --bundles msi --config ${configPath}`]
+    : ["tauri", "build", "--bundles", "msi", "--config", configPath];
+  const result = spawnSync(command, args, {
+    cwd: projectRoot,
+    encoding: "utf8",
+    stdio: "inherit",
+    timeout: 15 * 60_000,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`The native acceptance build failed (${result.status ?? result.signal}).`);
+}
+
 try {
   log("checking app state");
   const running = spawnSync("tasklist", ["/FI", "IMAGENAME eq hyes-read.exe", "/FO", "CSV", "/NH"], { encoding: "utf8" });
@@ -128,12 +151,17 @@ try {
   storeSnapshotTaken = true;
 
   const port = await choosePort();
+  const existingEndpoint = await fetch(`http://127.0.0.1:${port}/json/version`).catch(() => null);
+  if (existingEndpoint?.ok) throw new Error(`WebView2 acceptance port ${port} is already in use.`);
+  const acceptanceConfig = join(webviewDirectory, "tauri.acceptance.conf.json");
+  await writeFile(acceptanceConfig, createAcceptanceConfig(port));
+  log("building isolated acceptance binary");
+  runBuildWithAcceptanceConfig(acceptanceConfig);
   const pdfFixture = join(webviewDirectory, "hyesread-native-acceptance.pdf");
   await writeFile(pdfFixture, createPdfFixture());
   const appEnvironment = {
     ...process.env,
     WEBVIEW2_USER_DATA_FOLDER: webviewDirectory,
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
   };
   app = spawn(executable, [fixture], {
     cwd: projectRoot,
