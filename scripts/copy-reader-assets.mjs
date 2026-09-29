@@ -3,9 +3,13 @@ import { basename, relative, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
 const source = resolve(root, 'assets/web_reader/foliate-js')
-const target = resolve(root, 'out/assets/web_reader/foliate-js')
+const targetDirectory = process.argv[2] === '--public' ? 'public' : 'out'
+if (!['--public', '--out', undefined].includes(process.argv[2])) {
+  throw new Error(`Unknown destination: ${process.argv[2]}`)
+}
+const target = resolve(root, targetDirectory, 'assets/web_reader/foliate-js')
 
-await mkdir(resolve(root, 'out/assets/web_reader'), { recursive: true })
+await mkdir(resolve(root, targetDirectory, 'assets/web_reader'), { recursive: true })
 await rm(target, { recursive: true, force: true })
 await cp(source, target, {
   recursive: true,
@@ -18,4 +22,4 @@ await cp(source, target, {
       && !['eslint.config.js', '.gitignore', '.gitattributes'].includes(name)
   },
 })
-console.log('Copied the offline book reader into out/assets/web_reader/foliate-js')
+console.log(`Copied the offline book reader into ${targetDirectory}/assets/web_reader/foliate-js`)

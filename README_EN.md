@@ -4,7 +4,7 @@ HyesRead is a local e-book reader that keeps your library, reading position, and
 
 ## Features
 
-- Read EPUB, PDF, MOBI, AZW3/KF8, FB2, CBZ, TXT, and Markdown files.
+- Read EPUB, PDF, MOBI, AZW3/KF8, FB2/FBZ, CBZ, TXT, and Markdown files.
 - Scan local folders in the desktop app, or add books directly in a browser.
 - Search and sort your library by title or author.
 - Save your reading position and view reading time and activity.

@@ -1,6 +1,6 @@
 {
   "productName": "HyesRead",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.hyes.read",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -37,7 +37,7 @@
     ],
     "fileAssociations": [
       {
-        "ext": ["epub", "mobi", "azw3", "pdf", "cbz", "txt"],
+        "ext": ["epub", "mobi", "azw3", "kf8", "pdf", "cbz", "txt", "md", "fb2", "fbz"],
         "name": "E-book Document",
         "description": "Electronic book file managed by HyesRead",
         "role": "Viewer"

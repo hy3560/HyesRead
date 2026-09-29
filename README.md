@@ -4,7 +4,7 @@ HyesRead 是一款把书架、阅读进度和阅读统计保存在本机的电�
 
 ## 功能
 
-- 阅读 EPUB、PDF、MOBI、AZW3/KF8、FB2、CBZ、TXT 和 Markdown 文件。
+- 阅读 EPUB、PDF、MOBI、AZW3/KF8、FB2/FBZ、CBZ、TXT 和 Markdown 文件。
 - 桌面版可以扫描本地文件夹；浏览器版可选择文件直接阅读。
 - 按书名和作者搜索、排序和管理书架。
 - 保存每本书的阅读位置，并记录阅读时长和日期。

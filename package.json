@@ -1,11 +1,13 @@
 {
   "name": "hyes-read",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "scripts": {
+    "predev": "node scripts/copy-reader-assets.mjs --public",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-reader-assets.mjs --public",
     "build": "next build",
-    "postbuild": "node scripts/copy-reader-assets.mjs",
+    "postbuild": "node scripts/copy-reader-assets.mjs --out",
     "start": "next start",
     "lint": "tsc --noEmit",
     "tauri": "tauri"
