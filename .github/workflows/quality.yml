@@ -48,4 +48,40 @@ jobs:
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: pnpm tauri build --bundles msi
+      - name: Install WebView2 Runtime for native acceptance
+        shell: pwsh
+        run: |
+          $runtimeId = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $runtimeKeys = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$runtimeId",
+            "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$runtimeId"
+          )
+          $runtimeVersion = $null
+          foreach ($runtimeKey in $runtimeKeys) {
+            $candidate = (Get-ItemProperty -Path $runtimeKey -Name pv -ErrorAction SilentlyContinue).pv
+            if ($candidate -and [version]$candidate -gt [version]'0.0.0.0') {
+              $runtimeVersion = $candidate
+              break
+            }
+          }
+
+          if (-not $runtimeVersion) {
+            $bootstrapper = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebView2Setup.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $bootstrapper
+            $installer = Start-Process -FilePath $bootstrapper -ArgumentList '/silent', '/install' -Wait -PassThru
+            if ($installer.ExitCode -ne 0) {
+              throw "WebView2 Runtime installation failed with exit code $($installer.ExitCode)."
+            }
+
+            foreach ($runtimeKey in $runtimeKeys) {
+              $candidate = (Get-ItemProperty -Path $runtimeKey -Name pv -ErrorAction SilentlyContinue).pv
+              if ($candidate -and [version]$candidate -gt [version]'0.0.0.0') {
+                $runtimeVersion = $candidate
+                break
+              }
+            }
+          }
+
+          if (-not $runtimeVersion) { throw 'WebView2 Runtime is unavailable after installation.' }
+          Write-Host "WebView2 Runtime: $runtimeVersion"
       - run: pnpm test:native
