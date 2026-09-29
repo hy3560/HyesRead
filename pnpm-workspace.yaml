@@ -1,2 +1,7 @@
 allowBuilds:
   sharp: false
+overrides:
+  baseline-browser-mapping: 2.11.26
+  browserslist: 4.28.7
+  postcss: 8.5.28
+  postcss-selector-parser: 6.1.4

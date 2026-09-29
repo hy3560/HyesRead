@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { invoke, isDesktop, readValue, writeValue } from "../lib/platform";
 import { getBrowserBook, isBrowserBook, removeBrowserBook, saveBrowserBook } from "../lib/browserBooks";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -52,6 +52,7 @@ export default function HyesReadMaster() {
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<"title" | "author" | "recent">("recent");
   const [lastOpenedBook, setLastOpenedBook] = useState("");
+  const openFilesQueue = useRef<Promise<void>>(Promise.resolve());
 
   const stats = useMemo(() => {
     const totalCount = books.length;
@@ -237,7 +238,7 @@ export default function HyesReadMaster() {
       if (disposed) return;
 
       unlisten = await listen<string[]>("hyesread:open-files", event => {
-        void openAssociatedFiles(event.payload);
+        void enqueueOpenFiles(event.payload);
       });
       if (disposed) {
         unlisten();
@@ -245,7 +246,7 @@ export default function HyesReadMaster() {
       }
 
       const pendingPaths = await tauriInvoke<string[]>("take_open_files");
-      if (!disposed && pendingPaths.length) await openAssociatedFiles(pendingPaths);
+      if (!disposed && pendingPaths.length) await enqueueOpenFiles(pendingPaths);
     })().catch(error => console.error("处理系统打开的书籍失败", error));
 
     return () => {
@@ -259,6 +260,13 @@ export default function HyesReadMaster() {
     if (!uniquePaths.length) return;
     await handleImportFiles(uniquePaths);
     await handleOpenBook(uniquePaths[0]);
+  };
+
+  const enqueueOpenFiles = (paths: string[]) => {
+    openFilesQueue.current = openFilesQueue.current
+      .catch(() => undefined)
+      .then(() => openAssociatedFiles(paths));
+    return openFilesQueue.current;
   };
 
   const handleDeleteBook = async (path: string) => {
@@ -373,7 +381,7 @@ export default function HyesReadMaster() {
                     {(books.find(book => book.path === lastOpenedBook) || books[0]).cover ? <img src={(books.find(book => book.path === lastOpenedBook) || books[0]).cover || ""} alt="" className="h-44 w-32 rounded-xl object-cover" /> : <BookOpen size={48} className="text-orange-400" />}
                     <span><strong className="block text-xl text-white">{(books.find(book => book.path === lastOpenedBook) || books[0]).title}</strong><span className="mt-2 block text-sm text-zinc-500">{(books.find(book => book.path === lastOpenedBook) || books[0]).author}</span><span className="mt-5 block text-xs text-orange-400">继续阅读 →</span></span>
                   </button>
-                ) : <div className="flex-1 flex flex-col items-center justify-center gap-4 text-zinc-700"><BookOpen size={48} /><p className="text-xs tracking-widest uppercase italic">书库还是空的，请先导入书籍</p></div>}
+                ) : <div aria-hidden="true" className="flex-1 flex items-center justify-center text-zinc-500"><BookOpen size={48} /></div>}
               </motion.div>
             )}
 
@@ -575,13 +583,12 @@ function BookCard({ book, onOpen, onDelete }: { book: Book, onOpen: (path: strin
         <h3 className="text-[10px] font-bold mt-4 line-clamp-1 text-zinc-500 group-hover:text-white transition-colors">{book.title}</h3>
       </button>
       <div className="absolute top-2 left-2 z-20 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 [@media(max-width:640px)]:opacity-100">
-        <button type="button" aria-label={`从书架移除《${book.title}》`} onClick={() => onDelete(book.path)} className="rounded-full bg-zinc-800/90 p-2 text-white shadow-xl hover:bg-zinc-700" title="从书库移除"><BookIcon size={12} /></button>
+        <button type="button" aria-label={`从书架移除《${book.title}》`} onClick={() => onDelete(book.path)} className="rounded-full bg-zinc-800/90 p-2 text-white shadow-xl hover:bg-zinc-700"><BookIcon size={12} /></button>
         <button
           type="button"
           aria-label={`永久删除《${book.title}》文件`}
           onClick={handleDeleteClick}
           className="rounded-full bg-red-500/90 p-2 text-white shadow-xl hover:bg-red-500"
-          title="永久删除硬盘文件"
         ><Trash2 size={12} /></button>
       </div>
     </motion.div>
@@ -620,5 +627,5 @@ function StatCard({ icon, label, value, sub, isTextHeavy = false }: any) {
 }
 
 function EmptyState() {
-  return <div className="col-span-full h-96 flex flex-col items-center justify-center text-zinc-700 gap-4"><Ghost size={64} /><p className="text-sm">书架是空的，添加几本书开始阅读。</p></div>;
+  return <div aria-hidden="true" className="col-span-full h-96 flex items-center justify-center text-zinc-500"><Ghost size={56} /></div>;
 }

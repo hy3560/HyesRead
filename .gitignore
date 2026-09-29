@@ -51,3 +51,5 @@ public/assets/web_reader/foliate-js/
 dist/
 src-tauri/target/
 src-tauri/src-tauri/target/
+playwright-report/
+test-results/

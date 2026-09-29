@@ -41,3 +41,16 @@ pnpm tauri dev
 ```bash
 pnpm tauri build
 ```
+
+## 验证
+
+运行类型检查、依赖安全审计和桌面/手机尺寸的阅读器回归测试：
+
+```bash
+pnpm lint
+pnpm audit --prod --registry=https://registry.npmjs.org
+pnpm exec playwright install chromium
+pnpm test:e2e
+```
+
+完整的 Windows 安装包构建由 GitHub Actions 在每次主分支更新和拉取请求时执行。
