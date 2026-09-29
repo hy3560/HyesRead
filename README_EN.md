@@ -10,6 +10,10 @@ HyesRead is a local e-book reader that keeps your library, reading position, and
 - Save your reading position and view reading time and activity.
 - No account required. Library data and reading history stay on your device.
 
+## Windows installer
+
+Download the Windows x64 installer from [GitHub Releases](https://github.com/hy3560/HyesRead/releases/latest). You can also run or build the desktop app from source below.
+
 ## Run in a browser
 
 Install Node.js and pnpm, then run:
@@ -35,5 +39,3 @@ Build a desktop installer with:
 ```bash
 pnpm tauri build
 ```
-
-There are no prebuilt installers published yet. You can run the source or build an installer locally.
