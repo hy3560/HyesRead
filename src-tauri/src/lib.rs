@@ -40,13 +40,16 @@ fn route_open_files(app: &tauri::AppHandle, paths: Vec<String>) {
         return;
     }
     let state = app.state::<OpenFileQueue>();
-    let frontend_ready = state.frontend_ready.lock().map(|ready| *ready).unwrap_or(false);
-    if !frontend_ready {
+    let Ok(frontend_ready) = state.frontend_ready.lock() else {
+        return;
+    };
+    if !*frontend_ready {
         if let Ok(mut pending) = state.pending.lock() {
             pending.extend(paths);
         }
         return;
     }
+    drop(frontend_ready);
 
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -242,9 +245,8 @@ async fn open_book(path: String) -> Result<(), String> {
 #[tauri::command]
 fn take_open_files(state: State<'_, OpenFileQueue>) -> Result<Vec<String>, String> {
     let mut ready = state.frontend_ready.lock().map_err(|e| e.to_string())?;
-    *ready = true;
-    drop(ready);
     let mut pending = state.pending.lock().map_err(|e| e.to_string())?;
+    *ready = true;
     Ok(std::mem::take(&mut *pending))
 }
 
@@ -283,4 +285,27 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::supported_book_path;
+    use std::path::Path;
+
+    #[test]
+    fn resolves_existing_supported_books_and_rejects_other_paths() {
+        let root = std::env::temp_dir().join(format!("hyesread-file-association-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary book directory");
+        let book = root.join("book.EPUB");
+        std::fs::write(&book, b"test book").expect("create temporary book");
+
+        assert_eq!(
+            supported_book_path(Path::new("book.EPUB"), &root),
+            Some(book.to_string_lossy().into_owned())
+        );
+        assert_eq!(supported_book_path(Path::new("missing.pdf"), &root), None);
+        assert_eq!(supported_book_path(Path::new("image.png"), &root), None);
+
+        std::fs::remove_dir_all(root).expect("remove temporary book directory");
+    }
 }

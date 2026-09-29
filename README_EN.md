@@ -39,3 +39,16 @@ Build a desktop installer with:
 ```bash
 pnpm tauri build
 ```
+
+## Verification
+
+Run type checking, the dependency security audit, and reader smoke tests at desktop and mobile sizes:
+
+```bash
+pnpm lint
+pnpm audit --prod --registry=https://registry.npmjs.org
+pnpm exec playwright install chromium
+pnpm test:e2e
+```
+
+GitHub Actions builds the Windows installer for every main-branch update and pull request.
