@@ -20,8 +20,18 @@ const webviewDirectory = await mkdtemp(join(tmpdir(), "hyesread-webview2-"));
 const managedStoreFiles = ["hyes_master.json", "hyes_stats.json"];
 const originalStoreFiles = new Set();
 let app;
+let secondLaunch;
 let browser;
 let storeSnapshotTaken = false;
+
+function log(stage) {
+  console.log(`[native acceptance] ${stage}`);
+}
+
+function stopProcess(child) {
+  if (!child?.pid) return;
+  spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+}
 
 async function choosePort() {
   const server = net.createServer();
@@ -83,6 +93,7 @@ async function restoreStore() {
 }
 
 try {
+  log("checking app state");
   const running = spawnSync("tasklist", ["/FI", "IMAGENAME eq hyes-read.exe", "/FO", "CSV", "/NH"], { encoding: "utf8" });
   if (running.error) throw running.error;
   if (running.stdout.toLowerCase().includes('"hyes-read.exe"')) {
@@ -113,6 +124,7 @@ try {
     stdio: "ignore",
     env: appEnvironment,
   });
+  log("waiting for desktop WebView2");
   await waitForDebugEndpoint(port, app);
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
 
@@ -144,6 +156,7 @@ try {
   }
   if (!readerFrame) throw new Error("The bundled Foliate reader did not load in WebView2.");
   await readerFrame.locator("foliate-view").waitFor({ state: "visible", timeout: 30_000 });
+  log("checking EPUB chapter rendering");
 
   let chapterText = "";
   let chapterFrame;
@@ -165,13 +178,14 @@ try {
   const progress = await readerFrame.locator("#progress-slider").getAttribute("title");
   if (!progress?.includes("Loc")) throw new Error("The EPUB location controls did not initialize in WebView2.");
 
-  const secondLaunch = spawn(executable, [pdfFixture], { cwd: projectRoot, stdio: "ignore", env: appEnvironment });
+  log("checking PDF and second-instance forwarding");
+  secondLaunch = spawn(executable, [pdfFixture], { cwd: projectRoot, stdio: "ignore", env: appEnvironment });
   const secondExitCode = await Promise.race([
     new Promise(resolvePromise => secondLaunch.once("exit", resolvePromise)),
     delay(15_000).then(() => null),
   ]);
   if (secondExitCode === null) {
-    spawnSync("taskkill", ["/PID", String(secondLaunch.pid), "/T", "/F"], { stdio: "ignore" });
+    stopProcess(secondLaunch);
     throw new Error("A second desktop launch did not hand its PDF to the running HyesRead instance.");
   }
 
@@ -202,12 +216,14 @@ try {
   }
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 
-  console.log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, pdfPageRendered: true, secondLaunchForwarded: true }));
+  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, pdfPageRendered: true, secondLaunchForwarded: true }));
 } finally {
   if (browser) await browser.close().catch(() => undefined);
-  if (app?.exitCode === null) {
-    spawnSync("taskkill", ["/PID", String(app.pid), "/T", "/F"], { stdio: "ignore" });
-    await Promise.race([new Promise(resolvePromise => app.once("exit", resolvePromise)), delay(5_000)]);
+  for (const child of [secondLaunch, app]) {
+    if (child?.exitCode === null) {
+      stopProcess(child);
+      await Promise.race([new Promise(resolvePromise => child.once("exit", resolvePromise)), delay(5_000)]);
+    }
   }
   if (storeSnapshotTaken) await restoreStore();
 
