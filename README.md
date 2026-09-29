@@ -12,6 +12,10 @@ HyesRead 是一款把书架、阅读进度和阅读统计保存在本机的电�
 
 ## 运行
 
+### Windows 安装版
+
+在 [GitHub Releases](https://github.com/hy3560/HyesRead/releases/latest) 下载 Windows x64 安装包。也可以继续按下方步骤从源码运行。
+
 ### 浏览器版
 
 安装 Node.js 和 pnpm 后，在项目目录运行：
@@ -37,5 +41,3 @@ pnpm tauri dev
 ```bash
 pnpm tauri build
 ```
-
-当前仓库尚未发布预编译安装包；可以从源码运行或自行构建。
