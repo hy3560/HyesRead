@@ -2,6 +2,9 @@ import { defineConfig, devices } from "@playwright/test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const port = Number(process.env.HYESREAD_E2E_PORT ?? 3187);
+const baseURL = `http://127.0.0.1:${port}`;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   workers: 2,
@@ -11,7 +14,7 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "github" : "list",
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
@@ -20,8 +23,8 @@ export default defineConfig({
     { name: "mobile-chromium", use: { ...devices["Pixel 7"] } },
   ],
   webServer: {
-    command: "pnpm dev --hostname 127.0.0.1 --port 3000",
-    url: "http://127.0.0.1:3000",
+    command: `pnpm dev --hostname 127.0.0.1 --port ${port}`,
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
