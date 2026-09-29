@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -29,5 +28,8 @@ jobs:
       - name: Publish release with installer
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body: |
+            Windows x64 installer for HyesRead 0.1.0.
+
+            Download the MSI below, install it, and open HyesRead from the Start menu.
           files: src-tauri/target/release/bundle/msi/*.msi
