@@ -2,12 +2,58 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::Read;
+use std::ffi::OsString;
+use std::sync::Mutex;
 use epub::doc::EpubDoc;
 use mobi::Mobi; 
 use base64::{Engine as _, engine::general_purpose};
 use walkdir::WalkDir;
 use rayon::prelude::*;
-use tauri::Manager;
+use tauri::{Emitter, Manager, State};
+
+#[derive(Default)]
+struct OpenFileQueue {
+    frontend_ready: Mutex<bool>,
+    pending: Mutex<Vec<String>>,
+}
+
+fn supported_book_path(path: &Path, cwd: &Path) -> Option<String> {
+    let mut path = PathBuf::from(path);
+    if path.is_relative() {
+        path = cwd.join(path);
+    }
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(extension.as_str(), "epub" | "pdf" | "mobi" | "azw3" | "kf8" | "fb2" | "fbz" | "cbz" | "txt" | "md") {
+        return None;
+    }
+    path.is_file().then(|| path.to_string_lossy().into_owned())
+}
+
+fn paths_from_args(args: impl IntoIterator<Item = OsString>, cwd: &Path) -> Vec<String> {
+    args.into_iter()
+        .filter_map(|arg| supported_book_path(Path::new(&arg), cwd))
+        .collect()
+}
+
+fn route_open_files(app: &tauri::AppHandle, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    let state = app.state::<OpenFileQueue>();
+    let frontend_ready = state.frontend_ready.lock().map(|ready| *ready).unwrap_or(false);
+    if !frontend_ready {
+        if let Ok(mut pending) = state.pending.lock() {
+            pending.extend(paths);
+        }
+        return;
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let _ = app.emit("hyesread:open-files", paths);
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BookMetadata {
@@ -193,12 +239,38 @@ async fn open_book(path: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn take_open_files(state: State<'_, OpenFileQueue>) -> Result<Vec<String>, String> {
+    let mut ready = state.frontend_ready.lock().map_err(|e| e.to_string())?;
+    *ready = true;
+    drop(ready);
+    let mut pending = state.pending.lock().map_err(|e| e.to_string())?;
+    Ok(std::mem::take(&mut *pending))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(OpenFileQueue::default())
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            let paths = paths_from_args(argv.into_iter().skip(1).map(OsString::from), Path::new(&cwd));
+            route_open_files(app, paths);
+        }))
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .setup(|app| {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let paths = paths_from_args(std::env::args_os().skip(1), &cwd);
+            if !paths.is_empty() {
+                app.state::<OpenFileQueue>()
+                    .pending
+                    .lock()
+                    .map_err(|_| std::io::Error::other("打开文件队列不可用"))?
+                    .extend(paths);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             scan_library, 
             import_files, 
@@ -206,7 +278,8 @@ pub fn run() {
             delete_book,
             open_book,
             reveal_book,
-            prepare_book_read
+            prepare_book_read,
+            take_open_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
