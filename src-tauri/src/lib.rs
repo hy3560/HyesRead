@@ -108,8 +108,8 @@ async fn scan_library(folder_path: String) -> Result<Vec<BookMetadata>, String> 
     if !root.exists() { return Err("目录不存在".into()); }
 
     let formats = vec![
-        "epub", "mobi", "azw3", "kf8", "pdf", "txt", 
-        "cbz", "fb2"
+        "epub", "mobi", "azw3", "kf8", "pdf", "txt", "md",
+        "cbz", "fb2", "fbz"
     ];
 
     let entries: Vec<PathBuf> = WalkDir::new(root)

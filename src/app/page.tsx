@@ -255,12 +255,12 @@ export default function HyesReadMaster() {
         </motion.div>
 
         <div className="flex-1 flex flex-col gap-10">
-          <NavIcon icon={<Clock size={20} />} active={activeTab === 'home'} onClick={() => setActiveTab('home')} />
-          <NavIcon icon={<Library size={20} />} active={activeTab === 'library'} onClick={() => setActiveTab('library')} />
+          <NavIcon label="首页" icon={<Clock size={20} />} active={activeTab === 'home'} onClick={() => setActiveTab('home')} />
+          <NavIcon label="书架" icon={<Library size={20} />} active={activeTab === 'library'} onClick={() => setActiveTab('library')} />
         </div>
         <div className="mb-4 flex flex-col gap-8">
-           <NavIcon icon={<NotebookPen size={20} />} active={activeTab === 'stats'} onClick={() => setActiveTab('stats')} className="text-blue-400" />
-           <NavIcon icon={<Settings2 size={20} />} active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
+           <NavIcon label="阅读统计" icon={<NotebookPen size={20} />} active={activeTab === 'stats'} onClick={() => setActiveTab('stats')} className="text-blue-400" />
+           <NavIcon label="设置" icon={<Settings2 size={20} />} active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
         </div>
       </nav>
 
@@ -275,8 +275,10 @@ export default function HyesReadMaster() {
                 <button onClick={async () => {
                 if (!isDesktop()) {
                   const chosen = await new Promise<File[]>((resolve) => {
-                    const input = document.createElement("input"); input.type = "file"; input.multiple = true; input.accept = ".epub,.pdf,.mobi,.azw3,.fb2,.cbz,.txt,.md";
-                    input.onchange = () => resolve(Array.from(input.files || [])); input.click();
+                    const input = document.createElement("input"); input.type = "file"; input.multiple = true; input.accept = ".epub,.pdf,.mobi,.azw3,.kf8,.fb2,.fbz,.cbz,.txt,.md";
+                    input.onchange = () => resolve(Array.from(input.files || []));
+                    input.oncancel = () => resolve([]);
+                    input.click();
                   });
                   for (const file of chosen) {
                     const url = `browser-book:${crypto.randomUUID()}`;
@@ -291,7 +293,7 @@ export default function HyesReadMaster() {
                 const paths = await openDialog({ 
                     multiple: true, 
                     directory: false,
-                    filters: [{ name: 'Books', extensions: ['epub', 'mobi', 'azw3', 'kf8', 'pdf', 'txt', 'cbz', 'fb2'] }]
+                    filters: [{ name: 'Books', extensions: ['epub', 'mobi', 'azw3', 'kf8', 'pdf', 'txt', 'md', 'cbz', 'fb2', 'fbz'] }]
                 });
                 if (paths && Array.isArray(paths)) handleImportFiles(paths as string[]);
               }} aria-label="添加文件" className="flex items-center gap-2 bg-white/5 text-zinc-300 border border-white/10 px-5 py-2.5 rounded-2xl font-bold text-xs hover:bg-white/10 hover:text-white transition-all z-20 max-[640px]:h-11 max-[640px]:w-11 max-[640px]:justify-center max-[640px]:p-0">
@@ -299,14 +301,13 @@ export default function HyesReadMaster() {
                 <span className="max-[640px]:hidden">添加文件</span>
             </button>
 
-            <button onClick={async () => {
-                if (!isDesktop()) { alert("网页版请用“添加文件”选择书籍。"); return; }
+            {isDesktop() && <button onClick={async () => {
                 const p = await openDialog({ directory: true });
                 if (p) handleScan(p as string);
               }} aria-label="导入书库" className="flex items-center gap-2 bg-white text-black px-5 py-2.5 rounded-2xl font-black text-xs hover:bg-orange-500 hover:text-white transition-all z-20 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_20px_rgba(249,115,22,0.4)] max-[640px]:h-11 max-[640px]:w-11 max-[640px]:justify-center max-[640px]:p-0">
                 <FolderPlus size={16} />
                 <span className="max-[640px]:hidden">导入书库</span>
-            </button>
+            </button>}
           </div>
         </header>
 
@@ -485,7 +486,7 @@ export default function HyesReadMaster() {
                 <div className="bg-white/[0.02] border border-white/5 p-8 rounded-[2rem] space-y-6">
                   <h2 className="text-lg font-serif text-white">阅读设置</h2>
                   <div className="flex items-center gap-3 text-sm text-zinc-400"><BookOpen size={18} className="text-orange-400" /> 书籍、阅读位置和统计保存在本机。</div>
-                  <p className="text-xs text-zinc-600">支持 EPUB、PDF、MOBI、AZW3、FB2、CBZ 和 TXT。</p>
+                  <p className="text-xs text-zinc-600">支持 EPUB、PDF、MOBI/KF8、FB2/FBZ、CBZ、TXT 和 Markdown。</p>
                 </div>
               </motion.div>
             )}
@@ -496,8 +497,6 @@ export default function HyesReadMaster() {
   );
 }
 function BookCard({ book, onOpen, onDelete }: { book: Book, onOpen: (path: string) => void, onDelete: (path: string) => void }) {
-  const [isHovered, setIsHovered] = useState(false);
-
   const handleDeleteClick = async (e: React.MouseEvent) => {
     e.stopPropagation(); 
     if (book.isFile) { onDelete(book.path); return; }
@@ -514,28 +513,10 @@ function BookCard({ book, onOpen, onDelete }: { book: Book, onOpen: (path: strin
   return (
     <motion.div 
       whileHover={{ y: -8 }} 
-      className="group cursor-pointer relative"
-      onClick={() => onOpen(book.path)}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      className="group relative"
     >
-      <div className="aspect-[3/4.2] bg-zinc-900 rounded-2xl overflow-hidden relative border border-white/5 group-hover:border-orange-500/40 transition-all shadow-lg group-hover:shadow-orange-500/10">
-        <AnimatePresence>
-          {isHovered && (
-            <div className="absolute top-2 left-2 z-20 flex gap-2">
-              <button onClick={(e) => { e.stopPropagation(); onDelete(book.path); }} className="rounded-full bg-zinc-800/90 p-2 text-white shadow-xl hover:bg-zinc-700" title="从书库移除"><BookIcon size={12} /></button>
-              <motion.button
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.8 }}
-                onClick={handleDeleteClick}
-                className="rounded-full bg-red-500/90 p-2 text-white shadow-xl hover:bg-red-500"
-                title="永久删除硬盘文件"
-              ><Trash2 size={12} /></motion.button>
-            </div>
-          )}
-        </AnimatePresence>
-
+      <button type="button" aria-label={`打开《${book.title}》`} onClick={() => onOpen(book.path)} className="block w-full text-left">
+        <div className="aspect-[3/4.2] bg-zinc-900 rounded-2xl overflow-hidden relative border border-white/5 group-hover:border-orange-500/40 transition-all shadow-lg group-hover:shadow-orange-500/10">
         {book.cover ? (
           <img src={book.cover} className="w-full h-full object-cover" />
         ) : (
@@ -553,18 +534,29 @@ function BookCard({ book, onOpen, onDelete }: { book: Book, onOpen: (path: strin
         <div className="absolute top-3 right-3 text-[8px] bg-black/60 backdrop-blur-md px-2 py-0.5 rounded border border-white/10 text-orange-400 font-mono">
           {book.format}
         </div>
+        </div>
+        <h3 className="text-[10px] font-bold mt-4 line-clamp-1 text-zinc-500 group-hover:text-white transition-colors">{book.title}</h3>
+      </button>
+      <div className="absolute top-2 left-2 z-20 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 [@media(max-width:640px)]:opacity-100">
+        <button type="button" aria-label={`从书架移除《${book.title}》`} onClick={() => onDelete(book.path)} className="rounded-full bg-zinc-800/90 p-2 text-white shadow-xl hover:bg-zinc-700" title="从书库移除"><BookIcon size={12} /></button>
+        <button
+          type="button"
+          aria-label={`永久删除《${book.title}》文件`}
+          onClick={handleDeleteClick}
+          className="rounded-full bg-red-500/90 p-2 text-white shadow-xl hover:bg-red-500"
+          title="永久删除硬盘文件"
+        ><Trash2 size={12} /></button>
       </div>
-      <h3 className="text-[10px] font-bold mt-4 line-clamp-1 text-zinc-500 group-hover:text-white transition-colors">{book.title}</h3>
     </motion.div>
   );
 }
 
-function NavIcon({ icon, active, onClick, className = "" }: any) {
+function NavIcon({ icon, label, active, onClick, className = "" }: { icon: React.ReactNode; label: string; active: boolean; onClick: () => void; className?: string }) {
   return (
-    <div onClick={onClick} className={`relative p-3 cursor-pointer transition-all ${active ? 'text-white' : 'text-zinc-600 hover:text-zinc-400'} ${className}`}>
+    <button type="button" aria-label={label} aria-current={active ? "page" : undefined} onClick={onClick} className={`relative p-3 transition-all ${active ? 'text-white' : 'text-zinc-600 hover:text-zinc-400'} ${className}`}>
       {icon}
       {active && <motion.div layoutId="nav-glow" className="absolute -left-4 top-1/2 -translate-y-1/2 w-1 h-6 bg-orange-500 rounded-full shadow-[0_0_15px_rgba(249,115,22,0.8)]" />}
-    </div>
+    </button>
   );
 }
 
