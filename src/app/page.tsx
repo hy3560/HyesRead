@@ -224,6 +224,43 @@ export default function HyesReadMaster() {
     router.push(`/reader?path=${encodeURIComponent(path)}`);
   };
 
+  useEffect(() => {
+    if (!isDesktop()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    void (async () => {
+      const [{ listen }, { invoke: tauriInvoke }] = await Promise.all([
+        import("@tauri-apps/api/event"),
+        import("@tauri-apps/api/core"),
+      ]);
+      if (disposed) return;
+
+      unlisten = await listen<string[]>("hyesread:open-files", event => {
+        void openAssociatedFiles(event.payload);
+      });
+      if (disposed) {
+        unlisten();
+        return;
+      }
+
+      const pendingPaths = await tauriInvoke<string[]>("take_open_files");
+      if (!disposed && pendingPaths.length) await openAssociatedFiles(pendingPaths);
+    })().catch(error => console.error("处理系统打开的书籍失败", error));
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const openAssociatedFiles = async (paths: string[]) => {
+    const uniquePaths = Array.from(new Set(paths.filter(path => path.trim().length > 0)));
+    if (!uniquePaths.length) return;
+    await handleImportFiles(uniquePaths);
+    await handleOpenBook(uniquePaths[0]);
+  };
+
   const handleDeleteBook = async (path: string) => {
     setBooks(prev => prev.filter(bk => bk.path !== path));
     try {
