@@ -45,5 +45,8 @@ app.*.map.json
 /android/app/release
 node_modules
 node_modules/
+.next/
+out/
+dist/
 src-tauri/target/
 src-tauri/src-tauri/target/
