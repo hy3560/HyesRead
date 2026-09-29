@@ -2001,10 +2001,10 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "允许访问图书馆扫描、文件导入和 AI/TTS 模型相关的自定义命令",
+          "description": "允许扫描、导入和管理本地电子书",
           "type": "string",
           "const": "allow-library-commands",
-          "markdownDescription": "允许访问图书馆扫描、文件导入和 AI/TTS 模型相关的自定义命令"
+          "markdownDescription": "允许扫描、导入和管理本地电子书"
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

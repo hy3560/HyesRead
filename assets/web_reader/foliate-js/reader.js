@@ -208,11 +208,26 @@ class Reader {
     }
 }
 
+const showError = error => {
+    const target = $('#drop-target')
+    if (!target.isConnected) document.body.append(target)
+    target.style.visibility = 'visible'
+    target.querySelector('h1').textContent = '无法打开这本书'
+    target.querySelector('p').textContent = error?.message || String(error)
+    console.error(error)
+    parent.postMessage({ type: 'hyesread:error', message: error?.message || String(error) }, '*')
+}
+
 const open = async file => {
-    document.body.removeChild($('#drop-target'))
+    $('#drop-target').remove()
     const reader = new Reader()
     globalThis.reader = reader
-    await reader.open(file)
+    try { await reader.open(file) } catch (error) { showError(error); return }
+    reader.view.addEventListener('relocate', ({ detail }) => parent.postMessage({
+        type: 'hyesread:relocate',
+        location: { fraction: detail.fraction, location: detail.location?.current, href: detail.tocItem?.href },
+    }, '*'))
+    parent.postMessage({ type: 'hyesread:ready' }, '*')
 }
 
 const dragOverHandler = e => e.preventDefault()
@@ -235,5 +250,12 @@ $('#file-button').addEventListener('click', () => $('#file-input').click())
 
 const params = new URLSearchParams(location.search)
 const url = params.get('url')
+addEventListener('message', event => {
+    if (event.source !== parent || !event.data) return
+    if (event.data.type === 'hyesread:open-file' && event.data.file)
+        open(event.data.file).catch(showError)
+    if (event.data.type === 'hyesread:restore' && event.data.location?.fraction != null)
+        globalThis.reader?.view?.goToFraction(event.data.location.fraction).catch(console.error)
+})
 if (url) open(url).catch(e => console.error(e))
 else dropTarget.style.visibility = 'visible'

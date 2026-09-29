@@ -1,16 +1,17 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isDesktop, readValue, writeValue } from "../lib/platform";
+import { getBrowserBook, isBrowserBook, removeBrowserBook, saveBrowserBook } from "../lib/browserBooks";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { load } from "@tauri-apps/plugin-store";
+import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Library, Settings2, Loader2, Ghost, 
-  RefreshCw, Clock, NotebookPen, 
+  Clock, NotebookPen,
   HardDrive, FileType, FolderPlus, FilePlus, Book as BookIcon,
-  BookOpen, Cpu, Server, Key, Volume2, Timer, Trophy, Activity, CalendarDays,
-  Trash2, Save
+  BookOpen, Timer, Trophy, Activity, CalendarDays,
+  Trash2, Search, List, Save
 } from "lucide-react";
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
@@ -19,7 +20,7 @@ import {
 type ViewType = 'home' | 'library' | 'stats' | 'settings';
 
 interface Book {
-  title: string; author: string; path: string; format: string; size: number; cover: string | null;
+  title: string; author: string; path: string; format: string; size: number; cover: string | null; isFile?: boolean;
 }
 
 interface ReadingSession {
@@ -33,7 +34,14 @@ interface TrendData {
   hours: number;
 }
 
+function mergeBooks(current: Book[], incoming: Book[]) {
+  const booksByPath = new Map(current.map(book => [book.path, book]));
+  incoming.forEach(book => booksByPath.set(book.path, book));
+  return Array.from(booksByPath.values());
+}
+
 export default function HyesReadMaster() {
+  const router = useRouter();
   const [books, setBooks] = useState<Book[]>([]);
   const [sessions, setSessions] = useState<ReadingSession[]>([]);
   const [chartRange, setChartRange] = useState<'30days' | 'year'>('30days');
@@ -41,33 +49,9 @@ export default function HyesReadMaster() {
   const [activeTab, setActiveTab] = useState<ViewType>('library');
   const [isScanning, setIsScanning] = useState(false);
 
-  const [apiUrl, setApiUrl] = useState("https://api.openai.com/v1");
-  const [apiKey, setApiKey] = useState("");
-  const [models, setModels] = useState<string[]>([]);
-  const [selectedModel, setSelectedModel] = useState("");
-  const [isFetchingModels, setIsFetchingModels] = useState(false);
-
-  const [ttsApiUrl, setTtsApiUrl] = useState("https://api.openai.com/v1");
-  const [ttsApiKey, setTtsApiKey] = useState("");
-  const [ttsModels, setTtsModels] = useState<string[]>([]);
-  const [selectedTtsModel, setSelectedTtsModel] = useState("");
-  const [isFetchingTts, setIsFetchingTts] = useState(false);
-
-  const addReadingSession = async (bookPath: string, durationMinutes: number) => {
-    const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    const dateStr = `${y}-${m}-${day}`;
-    
-    const newSession: ReadingSession = { date: dateStr, duration: durationMinutes, bookPath };
-    const newSessions = [...sessions, newSession];
-    setSessions(newSessions);
-
-    const statsStore = await load("hyes_stats.json");
-    await statsStore.set("sessions", newSessions);
-    await statsStore.save();
-  };
+  const [query, setQuery] = useState("");
+  const [sortMode, setSortMode] = useState<"title" | "author" | "recent">("recent");
+  const [lastOpenedBook, setLastOpenedBook] = useState("");
 
   const stats = useMemo(() => {
     const totalCount = books.length;
@@ -101,8 +85,7 @@ export default function HyesReadMaster() {
     if (longestBookPath) {
        const b = books.find(b => b.path === longestBookPath);
        if (b) longestBookTitle = b.title;
-       else if (longestBookPath === 'dev_test') longestBookTitle = "开发测试虚拟书籍";
-       else longestBookTitle = "已移除的书籍"; 
+       else longestBookTitle = "已从书架移除";
     }
 
     const today = new Date();
@@ -157,39 +140,33 @@ export default function HyesReadMaster() {
     };
   }, [books, sessions, chartRange]);
 
+  const filteredBooks = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase();
+    return books
+      .filter(book => !q || `${book.title} ${book.author}`.toLocaleLowerCase().includes(q))
+      .sort((a, b) => sortMode === "title" ? a.title.localeCompare(b.title) : sortMode === "author" ? a.author.localeCompare(b.author) : 0);
+  }, [books, query, sortMode]);
+
   useEffect(() => {
     (async () => {
       try {
-        const store = await load("hyes_master.json");
-        const path = await store.get<string>("library_path");
-        const discretePaths = await store.get<string[]>("discrete_files");
+        const path = await readValue("hyes_master.json", "library_path", "");
+        const discretePaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
+        setLastOpenedBook(await readValue("hyes_master.json", "last_opened_book", ""));
         
-        const storedUrl = await store.get<string>("api_url");
-        const storedKey = await store.get<string>("api_key");
-        const storedModel = await store.get<string>("selected_model");
-        if (storedUrl) setApiUrl(storedUrl);
-        if (storedKey) setApiKey(storedKey);
-        if (storedModel) setSelectedModel(storedModel);
-
-        const storedTtsUrl = await store.get<string>("tts_api_url");
-        const storedTtsKey = await store.get<string>("tts_api_key");
-        const storedTtsModel = await store.get<string>("selected_tts_model");
-        if (storedTtsUrl) setTtsApiUrl(storedTtsUrl);
-        if (storedTtsKey) setTtsApiKey(storedTtsKey);
-        if (storedTtsModel) setSelectedTtsModel(storedTtsModel);
-
         if (discretePaths && discretePaths.length > 0) {
-           invoke("import_files", { filePaths: discretePaths }).then((res: any) => {
-               setBooks(prev => {
-                   const map = new Map(prev.map((b: Book) => [b.path, b]));
-                   res.forEach((b: Book) => map.set(b.path, b));
-                   return Array.from(map.values());
-               });
-           }).catch(console.error);
+          if (isDesktop()) {
+            invoke<Book[]>("import_files", { filePaths: discretePaths }).then(res => setBooks(prev => mergeBooks(prev, res))).catch(console.error);
+          } else {
+            const restored = await Promise.all(discretePaths.filter(isBrowserBook).map(async path => {
+              const file = await getBrowserBook(path);
+              return file ? { title: file.name.replace(/\.[^.]+$/, ""), author: "", path, format: file.name.split(".").pop()?.toUpperCase() || "BOOK", size: file.size / 1048576, cover: null, isFile: true } satisfies Book : null;
+            }));
+            setBooks(prev => mergeBooks(prev, restored.filter(book => book !== null)));
+          }
         }
 
-        const statsStore = await load("hyes_stats.json");
-        const storedSessions = await statsStore.get<ReadingSession[]>("sessions") || [];
+        const storedSessions = await readValue<ReadingSession[]>("hyes_stats.json", "sessions", []);
         setSessions(storedSessions);
 
         if (path) handleScan(path);
@@ -202,16 +179,17 @@ export default function HyesReadMaster() {
     try {
       const result: Book[] = await invoke("scan_library", { folderPath: targetPath });
       setBooks(prev => {
-          const map = new Map(prev.map(b => [b.path, b]));
-          result.forEach(b => map.set(b.path, b));
-          return Array.from(map.values());
+          const normalizedRoot = targetPath.replace(/[\\/]+$/, "").toLocaleLowerCase();
+          const insideRoot = (path: string) => {
+            const normalized = path.toLocaleLowerCase();
+            return normalized === normalizedRoot || normalized.startsWith(normalizedRoot + "\\") || normalized.startsWith(normalizedRoot + "/");
+          };
+          return mergeBooks(prev.filter(book => !insideRoot(book.path)), result);
       });
-      const store = await load("hyes_master.json");
-      await store.set("library_path", targetPath);
-      await store.save();
+      await writeValue("hyes_master.json", "library_path", targetPath);
     } catch (e: any) { 
       console.error(e); 
-      alert("书库嗅探异常: " + e);
+      alert("扫描书库失败: " + e);
     }
     finally { setIsScanning(false); }
   };
@@ -226,11 +204,9 @@ export default function HyesReadMaster() {
             return Array.from(map.values());
         });
         
-        const store = await load("hyes_master.json");
-        const existingPaths: string[] = (await store.get<string[]>("discrete_files")) || [];
+        const existingPaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
         const newPaths = Array.from(new Set([...existingPaths, ...paths]));
-        await store.set("discrete_files", newPaths);
-        await store.save();
+        await writeValue("hyes_master.json", "discrete_files", newPaths);
     } catch (e: any) {
         alert("文件导入异常: " + e);
     } finally {
@@ -239,76 +215,32 @@ export default function HyesReadMaster() {
   };
 
   const handleOpenBook = async (path: string) => {
-    try {
-      await invoke("open_book", { path });
-      addReadingSession(path, 1); 
-    } catch (err) {
-      alert("无法唤起系统应用，请确保你的系统已安装能打开该格式的软件: " + err);
+    if (isDesktop()) {
+      try { await invoke("prepare_book_read", { path }); }
+      catch (e) { alert(`无法打开这本书：${e}`); return; }
     }
+    await writeValue("hyes_master.json", "last_opened_book", path);
+    setLastOpenedBook(path);
+    router.push(`/reader?path=${encodeURIComponent(path)}`);
   };
 
   const handleDeleteBook = async (path: string) => {
     setBooks(prev => prev.filter(bk => bk.path !== path));
     try {
-      const store = await load("hyes_master.json");
-      const existingPaths: string[] = (await store.get<string[]>("discrete_files")) || [];
+      const existingPaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
       if (existingPaths.includes(path)) {
-        await store.set("discrete_files", existingPaths.filter(p => p !== path));
-        await store.save();
+        await writeValue("hyes_master.json", "discrete_files", existingPaths.filter(p => p !== path));
       }
     } catch(e) { console.error("清理散装列表失败", e); }
   };
 
-  const handleSaveSettings = async () => {
+  const handleRemoveBook = async (path: string) => {
+    setBooks(prev => prev.filter(book => book.path !== path));
     try {
-      const store = await load("hyes_master.json");
-      await store.set("api_url", apiUrl);
-      await store.set("api_key", apiKey);
-      await store.set("tts_api_url", ttsApiUrl);
-      await store.set("tts_api_key", ttsApiKey);
-      await store.save();
-      alert("保存成功");
-    } catch (e) {
-      alert("保存失败");
-    }
-  };
-
-  const handleFetchModels = async () => {
-    if (!apiUrl || !apiKey) return alert("请先填写 AI 接口地址与密钥");
-    setIsFetchingModels(true);
-    try {
-      const fetchedModels: string[] = await invoke("fetch_remote_models", { apiUrl, apiKey });
-      setModels(fetchedModels);
-      if (fetchedModels.length > 0 && !fetchedModels.includes(selectedModel)) {
-        setSelectedModel(fetchedModels[0]);
-      }
-      const store = await load("hyes_master.json");
-      await store.set("api_url", apiUrl);
-      await store.set("api_key", apiKey);
-      if (fetchedModels.length > 0) await store.set("selected_model", fetchedModels[0]);
-      await store.save();
-    } catch (e: any) {
-      alert("AI 模型嗅探失败: " + e);
-    } finally { setIsFetchingModels(false); }
-  };
-
-  const handleFetchTtsModels = async () => {
-    if (!ttsApiUrl || !ttsApiKey) return alert("请先填写 TTS 接口地址与密钥");
-    setIsFetchingTts(true);
-    try {
-      const fetchedModels: string[] = await invoke("fetch_remote_models", { apiUrl: ttsApiUrl, apiKey: ttsApiKey });
-      setTtsModels(fetchedModels);
-      if (fetchedModels.length > 0 && !fetchedModels.includes(selectedTtsModel)) {
-        setSelectedTtsModel(fetchedModels[0]);
-      }
-      const store = await load("hyes_master.json");
-      await store.set("tts_api_url", ttsApiUrl);
-      await store.set("tts_api_key", ttsApiKey);
-      if (fetchedModels.length > 0) await store.set("selected_tts_model", fetchedModels[0]);
-      await store.save();
-    } catch (e: any) {
-      alert("TTS 模型嗅探失败: " + e);
-    } finally { setIsFetchingTts(false); }
+      const existingPaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
+      await writeValue("hyes_master.json", "discrete_files", existingPaths.filter(item => item !== path));
+    } catch (e) { console.error("从书库移除失败", e); }
+    if (isBrowserBook(path)) await removeBrowserBook(path);
   };
 
   return (
@@ -333,36 +265,52 @@ export default function HyesReadMaster() {
       </nav>
 
       <main className="flex-1 flex flex-col overflow-hidden relative">
-        <header className="h-24 flex items-center justify-between px-12 border-b border-white/5 z-20 shrink-0">
+        <header className="h-24 flex items-center justify-between gap-2 px-12 border-b border-white/5 z-20 shrink-0 max-[640px]:px-4">
           <div>
-            <h1 className="text-2xl font-serif italic text-white">Hyes Read</h1>
-            <p className="text-[10px] uppercase tracking-[0.4em] text-zinc-600">Unified Adapter Engine Active</p>
+            <h1 className="whitespace-nowrap text-2xl font-serif italic text-white max-[640px]:text-lg">Hyes Read</h1>
+            <p className="text-sm text-zinc-500 max-[640px]:hidden">你的本地书架</p>
           </div>
           
-          <div className="flex items-center gap-4">
-            <button onClick={async () => {
+          <div className="flex shrink-0 items-center gap-4 max-[640px]:gap-2">
+                <button onClick={async () => {
+                if (!isDesktop()) {
+                  const chosen = await new Promise<File[]>((resolve) => {
+                    const input = document.createElement("input"); input.type = "file"; input.multiple = true; input.accept = ".epub,.pdf,.mobi,.azw3,.fb2,.cbz,.txt,.md";
+                    input.onchange = () => resolve(Array.from(input.files || [])); input.click();
+                  });
+                  for (const file of chosen) {
+                    const url = `browser-book:${crypto.randomUUID()}`;
+                    await saveBrowserBook(url, file);
+                    const book: Book = { title: file.name.replace(/\.[^.]+$/, ""), author: "", path: url, format: file.name.split(".").pop()?.toUpperCase() || "BOOK", size: file.size / 1048576, cover: null, isFile: true };
+                    setBooks(prev => [book, ...prev.filter(item => item.path !== url)]);
+                    const existing = await readValue<string[]>("hyes_master.json", "discrete_files", []);
+                    await writeValue("hyes_master.json", "discrete_files", Array.from(new Set([...existing, url])));
+                  }
+                  return;
+                }
                 const paths = await openDialog({ 
                     multiple: true, 
                     directory: false,
-                    filters: [{ name: 'Books', extensions: ['epub', 'mobi', 'azw3', 'kf8', 'pdf', 'txt', 'cbz', 'cbr', 'doc', 'docx', 'rtf', 'md', 'fb2'] }]
+                    filters: [{ name: 'Books', extensions: ['epub', 'mobi', 'azw3', 'kf8', 'pdf', 'txt', 'cbz', 'fb2'] }]
                 });
                 if (paths && Array.isArray(paths)) handleImportFiles(paths as string[]);
-              }} className="flex items-center gap-2 bg-white/5 text-zinc-300 border border-white/10 px-5 py-2.5 rounded-2xl font-bold text-xs hover:bg-white/10 hover:text-white transition-all z-20">
+              }} aria-label="添加文件" className="flex items-center gap-2 bg-white/5 text-zinc-300 border border-white/10 px-5 py-2.5 rounded-2xl font-bold text-xs hover:bg-white/10 hover:text-white transition-all z-20 max-[640px]:h-11 max-[640px]:w-11 max-[640px]:justify-center max-[640px]:p-0">
                 <FilePlus size={16} />
-                <span>添加文件</span>
+                <span className="max-[640px]:hidden">添加文件</span>
             </button>
 
             <button onClick={async () => {
+                if (!isDesktop()) { alert("网页版请用“添加文件”选择书籍。"); return; }
                 const p = await openDialog({ directory: true });
                 if (p) handleScan(p as string);
-              }} className="flex items-center gap-2 bg-white text-black px-5 py-2.5 rounded-2xl font-black text-xs hover:bg-orange-500 hover:text-white transition-all z-20 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_20px_rgba(249,115,22,0.4)]">
+              }} aria-label="导入书库" className="flex items-center gap-2 bg-white text-black px-5 py-2.5 rounded-2xl font-black text-xs hover:bg-orange-500 hover:text-white transition-all z-20 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_20px_rgba(249,115,22,0.4)] max-[640px]:h-11 max-[640px]:w-11 max-[640px]:justify-center max-[640px]:p-0">
                 <FolderPlus size={16} />
-                <span>导入书库</span>
+                <span className="max-[640px]:hidden">导入书库</span>
             </button>
           </div>
         </header>
 
-        <section className="flex-1 overflow-y-auto p-12 custom-scrollbar relative">
+        <section className="flex-1 overflow-y-auto p-12 custom-scrollbar relative max-[640px]:p-4">
           <AnimatePresence mode="wait">
             {isScanning && (
               <motion.div 
@@ -373,7 +321,7 @@ export default function HyesReadMaster() {
                 <motion.div animate={{ rotate: 360 }} transition={{ duration: 2, repeat: Infinity, ease: "linear" }} className="text-orange-500 mb-6">
                   <Loader2 size={48} />
                 </motion.div>
-                <p className="text-xs tracking-[0.5em] text-white font-bold uppercase">嗅探引擎超载运转中</p>
+                <p className="text-xs tracking-[0.5em] text-white font-bold uppercase">正在读取书籍</p>
               </motion.div>
             )}
 
@@ -382,24 +330,34 @@ export default function HyesReadMaster() {
                 <div className="mb-6">
                   <h2 className="text-xl font-serif text-white border-b border-white/5 pb-4">正在阅读的书籍</h2>
                 </div>
-                <div className="flex-1 flex flex-col items-center justify-center opacity-20 gap-4">
-                  <BookOpen size={48} />
-                  <p className="text-[10px] tracking-widest uppercase italic">暂无</p>
-                </div>
+                {books.length ? (
+                  <button onClick={() => handleOpenBook((books.find(book => book.path === lastOpenedBook) || books[0]).path)} className="m-auto flex max-w-lg items-center gap-6 rounded-3xl border border-white/10 bg-white/[0.03] p-6 text-left hover:border-orange-500/40">
+                    {(books.find(book => book.path === lastOpenedBook) || books[0]).cover ? <img src={(books.find(book => book.path === lastOpenedBook) || books[0]).cover || ""} alt="" className="h-44 w-32 rounded-xl object-cover" /> : <BookOpen size={48} className="text-orange-400" />}
+                    <span><strong className="block text-xl text-white">{(books.find(book => book.path === lastOpenedBook) || books[0]).title}</strong><span className="mt-2 block text-sm text-zinc-500">{(books.find(book => book.path === lastOpenedBook) || books[0]).author}</span><span className="mt-5 block text-xs text-orange-400">继续阅读 →</span></span>
+                  </button>
+                ) : <div className="flex-1 flex flex-col items-center justify-center gap-4 text-zinc-700"><BookOpen size={48} /><p className="text-xs tracking-widest uppercase italic">书库还是空的，请先导入书籍</p></div>}
               </motion.div>
             )}
 
             {!isScanning && activeTab === 'library' && (
-              <motion.div key="grid" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-2 md:grid-cols-5 xl:grid-cols-7 gap-10">
-                {books.length === 0 ? <EmptyState /> : books.map(b => (
+              <div className="space-y-8">
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="flex min-w-64 flex-1 items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-zinc-500">
+                    <Search size={16} /><input aria-label="搜索书名或作者" value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索书名或作者" className="w-full bg-transparent text-sm text-white outline-none placeholder:text-zinc-600" />
+                  </label>
+                  <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3 text-zinc-400"><List size={15} /><select aria-label="书籍排序" value={sortMode} onChange={e => setSortMode(e.target.value as typeof sortMode)} className="bg-transparent text-sm text-white outline-none"><option value="recent">最近加入</option><option value="title">按书名</option><option value="author">按作者</option></select></label>
+                </div>
+                <motion.div key="grid" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-2 md:grid-cols-5 xl:grid-cols-7 gap-10">
+                {filteredBooks.length === 0 ? <EmptyState /> : filteredBooks.map(b => (
                   <BookCard 
                     key={b.path} 
                     book={b} 
                     onOpen={handleOpenBook}
-                    onDelete={handleDeleteBook}
+                    onDelete={handleRemoveBook}
                   />
                 ))}
-              </motion.div>
+                </motion.div>
+              </div>
             )}
 
             {!isScanning && activeTab === 'stats' && (
@@ -408,28 +366,28 @@ export default function HyesReadMaster() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                   <StatCard 
                     icon={<Library className="text-orange-500" />} 
-                    label="总藏书维度" 
+                    label="藏书数量"
                     value={`${stats.totalCount} 卷`} 
-                    sub={`${stats.formats} 种介质格式`}
+                    sub={`${stats.formats} 种文件格式`}
                   />
                   <StatCard 
                     icon={<Timer className="text-blue-500" />} 
-                    label="沉浸阅读时长" 
+                    label="累计阅读时长"
                     value={`${stats.totalReadHours} h`} 
-                    sub={`引擎真实记录`}
+                    sub="按实际阅读时间累计"
                   />
                   <StatCard 
                     icon={<Trophy className="text-yellow-500" />} 
-                    label="最长深度阅读" 
+                    label="阅读最多的书"
                     value={stats.longestBook} 
-                    sub="史诗级里程碑"
+                    sub="按累计时长计算"
                     isTextHeavy
                   />
                   <StatCard 
                     icon={<CalendarDays className="text-emerald-500" />} 
                     label="活跃阅读日" 
                     value={`${stats.activeDays} 天`} 
-                    sub="独立日活记录"
+                    sub="有阅读记录的日期"
                   />
                 </div>
 
@@ -438,13 +396,6 @@ export default function HyesReadMaster() {
                     <div className="flex items-center gap-3">
                       <Activity className="text-orange-500" />
                       <h2 className="text-lg font-serif text-white">阅读趋势</h2>
-                      <button 
-                        onClick={() => addReadingSession(books.length > 0 ? books[0].path : 'dev_test', 60)}
-                        className="flex items-center gap-1 px-3 py-1 bg-white/5 hover:bg-orange-500/20 border border-white/10 hover:border-orange-500/50 rounded-lg text-[10px] text-zinc-500 hover:text-orange-400 transition-all ml-4"
-                        title="点击此按钮测试真实统计：为今日追加 60 分钟阅读"
-                      >
-                        <Timer size={10} /> 探针: 测试注入 1h
-                      </button>
                     </div>
                     <div className="flex gap-2 bg-black/50 p-1 rounded-xl border border-white/5">
                       <button 
@@ -495,7 +446,7 @@ export default function HyesReadMaster() {
                             boxShadow: '0 10px 40px -10px rgba(0,0,0,0.5)'
                           }}
                           itemStyle={{ color: '#f97316', fontWeight: 'bold' }}
-                          labelStyle={{ color: '#71717a', fontSize: '10px', textTransform: 'uppercase', tracking: '0.1em', marginBottom: '4px' }}
+                          labelStyle={{ color: '#71717a', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '4px' }}
                         />
                         <Area 
                           type="monotone" 
@@ -515,7 +466,7 @@ export default function HyesReadMaster() {
                 <div className="bg-white/[0.02] border border-white/5 p-8 rounded-[2rem]">
                   <div className="flex items-center gap-3 border-b border-white/5 pb-6 mb-6">
                     <HardDrive className="text-zinc-400" size={20} />
-                    <h2 className="text-sm font-bold text-white tracking-widest">物理资产基盘 (总计: {stats.totalSize} MB)</h2>
+                    <h2 className="text-sm font-bold text-white tracking-widest">书籍文件大小（共 {stats.totalSize} MB）</h2>
                   </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
                     {Object.entries(stats.formatDist).map(([fmt, count]: any) => (
@@ -531,134 +482,26 @@ export default function HyesReadMaster() {
 
             {!isScanning && activeTab === 'settings' && (
               <motion.div key="settings" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="max-w-3xl space-y-8 pb-12">
-                
                 <div className="bg-white/[0.02] border border-white/5 p-8 rounded-[2rem] space-y-6">
-                  <div className="flex items-center gap-3 border-b border-white/5 pb-4">
-                    <Cpu className="text-orange-500" />
-                    <h2 className="text-lg font-serif text-white">AI 模型设置</h2>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <label className="flex items-center gap-2 text-[10px] text-zinc-400 uppercase tracking-widest">
-                        <Server size={14} className="text-blue-400" /> 接口地址 (API URL)
-                      </label>
-                      <input 
-                        type="text" value={apiUrl} onChange={(e) => setApiUrl(e.target.value)}
-                        placeholder="https://api.openai.com/v1" 
-                        className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-xs text-white outline-none focus:border-orange-500/50 transition-colors"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="flex items-center gap-2 text-[10px] text-zinc-400 uppercase tracking-widest">
-                        <Key size={14} className="text-emerald-400" /> 密钥 (API KEY)
-                      </label>
-                      <input 
-                        type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
-                        placeholder="sk-..." 
-                        className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-xs text-white outline-none focus:border-orange-500/50 transition-colors"
-                      />
-                    </div>
-                    
-                    <button 
-                      onClick={handleFetchModels} disabled={isFetchingModels}
-                      className="flex items-center justify-center gap-2 w-full bg-white/5 hover:bg-white/10 border border-white/5 text-white px-4 py-3 rounded-xl text-xs font-bold transition-all disabled:opacity-50"
-                    >
-                      {isFetchingModels ? <Loader2 size={16} className="animate-spin text-orange-500" /> : <RefreshCw size={16} className="text-orange-500" />}
-                      嗅探可用模型列表
-                    </button>
-                    
-                    {(models.length > 0 || selectedModel) && (
-                      <div className="pt-4 border-t border-white/5 space-y-2">
-                        <select 
-                           value={selectedModel}
-                           onChange={(e) => {
-                             setSelectedModel(e.target.value);
-                             load("hyes_master.json").then(store => { store.set("selected_model", e.target.value); store.save(); });
-                           }}
-                           className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-xs text-white outline-none focus:border-orange-500/50 appearance-none cursor-pointer"
-                        >
-                          {models.length > 0 ? models.map(m => <option key={m} value={m}>{m}</option>) : <option value={selectedModel}>{selectedModel}</option>}
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="bg-white/[0.02] border border-white/5 p-8 rounded-[2rem] space-y-6">
-                  <div className="flex items-center gap-3 border-b border-white/5 pb-4">
-                    <Volume2 className="text-purple-500" />
-                    <h2 className="text-lg font-serif text-white">TTS 模型设置</h2>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <label className="flex items-center gap-2 text-[10px] text-zinc-400 uppercase tracking-widest">
-                        <Server size={14} className="text-blue-400" /> 接口地址 (API URL)
-                      </label>
-                      <input 
-                        type="text" value={ttsApiUrl} onChange={(e) => setTtsApiUrl(e.target.value)}
-                        placeholder="https://api.openai.com/v1" 
-                        className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-xs text-white outline-none focus:border-purple-500/50 transition-colors"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="flex items-center gap-2 text-[10px] text-zinc-400 uppercase tracking-widest">
-                        <Key size={14} className="text-emerald-400" /> 密钥 (API KEY)
-                      </label>
-                      <input 
-                        type="password" value={ttsApiKey} onChange={(e) => setTtsApiKey(e.target.value)}
-                        placeholder="sk-..." 
-                        className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-xs text-white outline-none focus:border-purple-500/50 transition-colors"
-                      />
-                    </div>
-                    
-                    <button 
-                      onClick={handleFetchTtsModels} disabled={isFetchingTts}
-                      className="flex items-center justify-center gap-2 w-full bg-white/5 hover:bg-white/10 border border-white/5 text-white px-4 py-3 rounded-xl text-xs font-bold transition-all disabled:opacity-50"
-                    >
-                      {isFetchingTts ? <Loader2 size={16} className="animate-spin text-purple-500" /> : <RefreshCw size={16} className="text-purple-500" />}
-                      嗅探可用模型列表
-                    </button>
-                    
-                    {(ttsModels.length > 0 || selectedTtsModel) && (
-                      <div className="pt-4 border-t border-white/5 space-y-2">
-                        <select 
-                           value={selectedTtsModel}
-                           onChange={(e) => {
-                             setSelectedTtsModel(e.target.value);
-                             load("hyes_master.json").then(store => { store.set("selected_tts_model", e.target.value); store.save(); });
-                           }}
-                           className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-xs text-white outline-none focus:border-purple-500/50 appearance-none cursor-pointer"
-                        >
-                          {ttsModels.length > 0 ? ttsModels.map(m => <option key={m} value={m}>{m}</option>) : <option value={selectedTtsModel}>{selectedTtsModel}</option>}
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-4 pb-8">
-                  <button onClick={handleSaveSettings} className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white px-8 py-3 rounded-2xl font-black text-sm transition-all shadow-[0_0_15px_rgba(249,115,22,0.3)] hover:shadow-[0_0_25px_rgba(249,115,22,0.5)]">
-                    <Save size={18} />保存配置
-                  </button>
+                  <h2 className="text-lg font-serif text-white">阅读设置</h2>
+                  <div className="flex items-center gap-3 text-sm text-zinc-400"><BookOpen size={18} className="text-orange-400" /> 书籍、阅读位置和统计保存在本机。</div>
+                  <p className="text-xs text-zinc-600">支持 EPUB、PDF、MOBI、AZW3、FB2、CBZ 和 TXT。</p>
                 </div>
               </motion.div>
             )}
-
           </AnimatePresence>
         </section>
       </main>
     </div>
   );
 }
-
 function BookCard({ book, onOpen, onDelete }: { book: Book, onOpen: (path: string) => void, onDelete: (path: string) => void }) {
   const [isHovered, setIsHovered] = useState(false);
 
   const handleDeleteClick = async (e: React.MouseEvent) => {
     e.stopPropagation(); 
-    if (confirm(`【警告】是否永久删除《${book.title}》？\n\n该操作会销毁你硬盘上的物理文件且不可逆转！`)) {
+    if (book.isFile) { onDelete(book.path); return; }
+    if (confirm(`确定永久删除《${book.title}》？这会删除硬盘上的原文件。`)) {
       try {
         await invoke("delete_book", { path: book.path });
         onDelete(book.path);
@@ -679,16 +522,17 @@ function BookCard({ book, onOpen, onDelete }: { book: Book, onOpen: (path: strin
       <div className="aspect-[3/4.2] bg-zinc-900 rounded-2xl overflow-hidden relative border border-white/5 group-hover:border-orange-500/40 transition-all shadow-lg group-hover:shadow-orange-500/10">
         <AnimatePresence>
           {isHovered && (
-            <motion.button 
-              initial={{ opacity: 0, scale: 0.8 }} 
-              animate={{ opacity: 1, scale: 1 }} 
-              exit={{ opacity: 0, scale: 0.8 }}
-              onClick={handleDeleteClick}
-              className="absolute top-2 left-2 z-20 bg-red-500/90 hover:bg-red-500 text-white p-2 rounded-full backdrop-blur shadow-xl transition-colors"
-              title="物理抹除文件"
-            >
-              <Trash2 size={12} />
-            </motion.button>
+            <div className="absolute top-2 left-2 z-20 flex gap-2">
+              <button onClick={(e) => { e.stopPropagation(); onDelete(book.path); }} className="rounded-full bg-zinc-800/90 p-2 text-white shadow-xl hover:bg-zinc-700" title="从书库移除"><BookIcon size={12} /></button>
+              <motion.button
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.8 }}
+                onClick={handleDeleteClick}
+                className="rounded-full bg-red-500/90 p-2 text-white shadow-xl hover:bg-red-500"
+                title="永久删除硬盘文件"
+              ><Trash2 size={12} /></motion.button>
+            </div>
           )}
         </AnimatePresence>
 
@@ -747,5 +591,5 @@ function StatCard({ icon, label, value, sub, isTextHeavy = false }: any) {
 }
 
 function EmptyState() {
-  return <div className="col-span-full h-96 flex flex-col items-center justify-center opacity-20 gap-4"><Ghost size={64} /><p className="text-[10px] tracking-widest uppercase italic">等待书库导入...</p></div>;
+  return <div className="col-span-full h-96 flex flex-col items-center justify-center text-zinc-700 gap-4"><Ghost size={64} /><p className="text-sm">书架是空的，添加几本书开始阅读。</p></div>;
 }

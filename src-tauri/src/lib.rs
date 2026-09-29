@@ -7,6 +7,7 @@ use mobi::Mobi;
 use base64::{Engine as _, engine::general_purpose};
 use walkdir::WalkDir;
 use rayon::prelude::*;
+use tauri::Manager;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BookMetadata {
@@ -108,11 +109,12 @@ async fn scan_library(folder_path: String) -> Result<Vec<BookMetadata>, String> 
 
     let formats = vec![
         "epub", "mobi", "azw3", "kf8", "pdf", "txt", 
-        "cbz", "cbr", "doc", "docx", "rtf", "md", "fb2"
+        "cbz", "fb2"
     ];
 
     let entries: Vec<PathBuf> = WalkDir::new(root)
         .max_depth(5)
+        .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_file())
@@ -142,27 +144,15 @@ async fn import_files(file_paths: Vec<String>) -> Result<Vec<BookMetadata>, Stri
 }
 
 #[tauri::command]
-async fn fetch_remote_models(api_url: String, api_key: String) -> Result<Vec<String>, String> {
-    let base_url = api_url.trim_end_matches('/');
-    let target_url = if base_url.ends_with("/models") { base_url.to_string() } else { format!("{}/models", base_url) };
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
-    
-    let mut request = client.get(&target_url);
-    if !api_key.is_empty() {
-        request = request.header("Authorization", format!("Bearer {}", api_key));
-    }
-    
-    let res = request.send().await.map_err(|e| e.to_string())?;
-    let status = res.status();
-    
-    if status.is_success() {
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
-        let mut model_ids: Vec<String> = json["data"].as_array().unwrap_or(&vec![]).iter().filter_map(|m| m["id"].as_str().map(|s| s.to_string())).collect();
-        model_ids.sort();
-        Ok(model_ids)
-    } else {
-        Err(format!("HTTP Error: {}", status))
-    }
+async fn read_text_book(path: String) -> Result<String, String> {
+    let p = Path::new(&path);
+    if !p.is_file() { return Err("目标文件不存在".into()); }
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+    if ext != "txt" && ext != "md" { return Err("仅支持读取 TXT 和 Markdown 文本".into()); }
+    std::fs::read_to_string(p).or_else(|_| {
+        let bytes = std::fs::read(p)?;
+        Ok::<_, std::io::Error>(String::from_utf8_lossy(&bytes).into_owned())
+    }).map_err(|e| format!("读取文本失败: {e}"))
 }
 
 #[tauri::command]
@@ -173,6 +163,24 @@ async fn delete_book(path: String) -> Result<(), String> {
     } else {
         Err("文件已不存在或已被其它程序清理".into())
     }
+}
+
+#[tauri::command]
+async fn reveal_book(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.is_file() { return Err("目标文件不存在".into()); }
+    opener::reveal(p).map_err(|e| format!("无法在文件管理器中显示: {e}"))
+}
+
+#[tauri::command]
+async fn prepare_book_read(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.is_file() { return Err("目标文件不存在".into()); }
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !["epub", "pdf", "mobi", "azw3", "kf8", "fb2", "fbz", "cbz", "txt", "md"].contains(&ext.as_str()) {
+        return Err("不支持此文件格式".into());
+    }
+    app.asset_protocol_scope().allow_file(p).map_err(|e| format!("无法打开此文件: {e}"))
 }
 
 #[tauri::command]
@@ -194,9 +202,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_library, 
             import_files, 
-            fetch_remote_models,
+            read_text_book,
             delete_book,
-            open_book
+            open_book,
+            reveal_book,
+            prepare_book_read
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
