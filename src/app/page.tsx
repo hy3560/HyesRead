@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { invoke, isDesktop, readValue, writeValue } from "../lib/platform";
 import { getBrowserBook, isBrowserBook, removeBrowserBook, saveBrowserBook } from "../lib/browserBooks";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -52,7 +52,6 @@ export default function HyesReadMaster() {
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<"title" | "author" | "recent">("recent");
   const [lastOpenedBook, setLastOpenedBook] = useState("");
-  const openFilesQueue = useRef<Promise<void>>(Promise.resolve());
 
   const stats = useMemo(() => {
     const totalCount = books.length;
@@ -223,50 +222,6 @@ export default function HyesReadMaster() {
     await writeValue("hyes_master.json", "last_opened_book", path);
     setLastOpenedBook(path);
     router.push(`/reader?path=${encodeURIComponent(path)}`);
-  };
-
-  useEffect(() => {
-    if (!isDesktop()) return;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-
-    void (async () => {
-      const [{ listen }, { invoke: tauriInvoke }] = await Promise.all([
-        import("@tauri-apps/api/event"),
-        import("@tauri-apps/api/core"),
-      ]);
-      if (disposed) return;
-
-      unlisten = await listen<string[]>("hyesread:open-files", event => {
-        void enqueueOpenFiles(event.payload);
-      });
-      if (disposed) {
-        unlisten();
-        return;
-      }
-
-      const pendingPaths = await tauriInvoke<string[]>("take_open_files");
-      if (!disposed && pendingPaths.length) await enqueueOpenFiles(pendingPaths);
-    })().catch(error => console.error("处理系统打开的书籍失败", error));
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  const openAssociatedFiles = async (paths: string[]) => {
-    const uniquePaths = Array.from(new Set(paths.filter(path => path.trim().length > 0)));
-    if (!uniquePaths.length) return;
-    await handleImportFiles(uniquePaths);
-    await handleOpenBook(uniquePaths[0]);
-  };
-
-  const enqueueOpenFiles = (paths: string[]) => {
-    openFilesQueue.current = openFilesQueue.current
-      .catch(() => undefined)
-      .then(() => openAssociatedFiles(paths));
-    return openFilesQueue.current;
   };
 
   const handleDeleteBook = async (path: string) => {

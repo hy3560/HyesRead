@@ -94,6 +94,11 @@ test("adds, opens, and restores a local EPUB", async ({ page }) => {
   const reader = page.frameLocator("#foliate-reader");
   await expect(reader.locator("foliate-view")).toBeVisible();
   await expect.poll(() => reader.locator("#progress-slider").getAttribute("title")).toContain("Loc");
+  await expect.poll(async () => {
+    const chapter = page.frames().find(frame => frame.url().startsWith("blob:"));
+    if (!chapter) return "";
+    try { return await chapter.locator("body").innerText(); } catch { return ""; }
+  }).toContain("这是用于检查离线 EPUB 阅读路径的测试内容。");
   await expect(page.getByText("hyesread-acceptance.epub", { exact: true })).toBeVisible();
   expect(runtimeErrors).toEqual([]);
 });

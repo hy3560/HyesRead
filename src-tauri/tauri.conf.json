@@ -1,6 +1,6 @@
 {
   "productName": "HyesRead",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "identifier": "com.hyes.read",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -18,7 +18,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://* https://* ws://* wss://*; img-src 'self' data: blob:; media-src 'self' data: blob: http://* https://*;",
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-src 'self' blob:; connect-src 'self' http://* https://* ws://* wss://*; img-src 'self' data: blob:; media-src 'self' data: blob: http://* https://*;",
+      "dangerousDisableAssetCspModification": ["style-src"],
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]

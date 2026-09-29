@@ -53,4 +53,11 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
+Windows 桌面端还可以直接启动 WebView2 并验证 EPUB 正文：
+
+```powershell
+pnpm tauri build --bundles msi
+pnpm test:native
+```
+
 完整的 Windows 安装包构建由 GitHub Actions 在每次主分支更新和拉取请求时执行。

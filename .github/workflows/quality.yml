@@ -48,3 +48,4 @@ jobs:
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: pnpm tauri build --bundles msi
+      - run: pnpm test:native
