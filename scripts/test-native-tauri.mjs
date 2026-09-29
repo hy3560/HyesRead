@@ -23,6 +23,13 @@ let app;
 let secondLaunch;
 let browser;
 let storeSnapshotTaken = false;
+let appOutput = "";
+
+function captureAppOutput(stream, label) {
+  stream?.on("data", chunk => {
+    appOutput = `${appOutput}[${label}] ${chunk.toString()}`.slice(-16_000);
+  });
+}
 
 function log(stage) {
   console.log(`[native acceptance] ${stage}`);
@@ -55,7 +62,16 @@ async function waitForDebugEndpoint(port, child, timeoutMs = 60_000) {
     } catch {}
     await delay(250);
   }
-  throw new Error("HyesRead did not expose its local WebView2 acceptance endpoint.");
+  const diagnostics = spawnSync("powershell", [
+    "-NoProfile", "-Command",
+    "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('hyes-read.exe','msedgewebview2.exe') } | Select-Object ProcessId,ParentProcessId,SessionId,Name,CommandLine | Format-List | Out-String -Width 300",
+  ], { encoding: "utf8", timeout: 10_000 });
+  throw new Error([
+    `HyesRead did not expose its local WebView2 acceptance endpoint on port ${port}.`,
+    `App process: ${JSON.stringify({ pid: child.pid, exitCode: child.exitCode })}`,
+    `WebView2 processes:\n${diagnostics.stdout || diagnostics.stderr || "unavailable"}`,
+    `App output:\n${appOutput || "none"}`,
+  ].join("\n"));
 }
 
 function createPdfFixture() {
@@ -121,9 +137,11 @@ try {
   };
   app = spawn(executable, [fixture], {
     cwd: projectRoot,
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
     env: appEnvironment,
   });
+  captureAppOutput(app.stdout, "stdout");
+  captureAppOutput(app.stderr, "stderr");
   log("waiting for desktop WebView2");
   await waitForDebugEndpoint(port, app);
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
