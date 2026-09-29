@@ -52,6 +52,7 @@ export default function HyesReadMaster() {
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<"title" | "author" | "recent">("recent");
   const [lastOpenedBook, setLastOpenedBook] = useState("");
+  const [operationError, setOperationError] = useState("");
 
   const stats = useMemo(() => {
     const totalCount = books.length;
@@ -175,6 +176,7 @@ export default function HyesReadMaster() {
   }, []);
 
   const handleScan = async (targetPath: string) => {
+    setOperationError("");
     setIsScanning(true);
     try {
       const result: Book[] = await invoke("scan_library", { folderPath: targetPath });
@@ -187,14 +189,15 @@ export default function HyesReadMaster() {
           return mergeBooks(prev.filter(book => !insideRoot(book.path)), result);
       });
       await writeValue("hyes_master.json", "library_path", targetPath);
-    } catch (e: any) { 
-      console.error(e); 
-      alert("扫描书库失败: " + e);
+    } catch (e: any) {
+      console.error(e);
+      setOperationError(`扫描书库失败：${String(e)}`);
     }
     finally { setIsScanning(false); }
   };
 
   const handleImportFiles = async (paths: string[]) => {
+    setOperationError("");
     setIsScanning(true);
     try {
         const result: Book[] = await invoke("import_files", { filePaths: paths });
@@ -208,16 +211,18 @@ export default function HyesReadMaster() {
         const newPaths = Array.from(new Set([...existingPaths, ...paths]));
         await writeValue("hyes_master.json", "discrete_files", newPaths);
     } catch (e: any) {
-        alert("文件导入异常: " + e);
+        console.error(e);
+        setOperationError(`文件导入失败：${String(e)}`);
     } finally {
         setIsScanning(false);
     }
   };
 
   const handleOpenBook = async (path: string) => {
+    setOperationError("");
     if (isDesktop()) {
       try { await invoke("prepare_book_read", { path }); }
-      catch (e) { alert(`无法打开这本书：${e}`); return; }
+      catch (e) { console.error(e); setOperationError(`无法打开这本书：${String(e)}`); return; }
     }
     await writeValue("hyes_master.json", "last_opened_book", path);
     setLastOpenedBook(path);
@@ -312,6 +317,12 @@ export default function HyesReadMaster() {
         </header>
 
         <section className="flex-1 overflow-y-auto p-12 custom-scrollbar relative max-[640px]:p-4">
+          {operationError && (
+            <div role="alert" className="mb-5 flex items-start justify-between gap-4 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-300">
+              <span>{operationError}</span>
+              <button type="button" aria-label="关闭错误信息" onClick={() => setOperationError("")} className="shrink-0 text-red-200/70 hover:text-red-100">×</button>
+            </div>
+          )}
           <AnimatePresence mode="wait">
             {isScanning && (
               <motion.div 
@@ -355,6 +366,7 @@ export default function HyesReadMaster() {
                     book={b} 
                     onOpen={handleOpenBook}
                     onDelete={handleRemoveBook}
+                    onError={setOperationError}
                   />
                 ))}
                 </motion.div>
@@ -496,16 +508,17 @@ export default function HyesReadMaster() {
     </div>
   );
 }
-function BookCard({ book, onOpen, onDelete }: { book: Book, onOpen: (path: string) => void, onDelete: (path: string) => void }) {
+function BookCard({ book, onOpen, onDelete, onError }: { book: Book, onOpen: (path: string) => void, onDelete: (path: string) => void, onError: (message: string) => void }) {
   const handleDeleteClick = async (e: React.MouseEvent) => {
     e.stopPropagation(); 
     if (book.isFile) { onDelete(book.path); return; }
-    if (confirm(`确定永久删除《${book.title}》？这会删除硬盘上的原文件。`)) {
+    if (window.confirm(`确定永久删除《${book.title}》？这会删除硬盘上的原文件。`)) {
       try {
         await invoke("delete_book", { path: book.path });
         onDelete(book.path);
       } catch (err) {
-        alert(err);
+        console.error(err);
+        onError(`永久删除失败：${String(err)}`);
       }
     }
   };
