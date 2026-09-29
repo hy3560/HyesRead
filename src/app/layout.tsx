@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import OpenFilesBridge from "../components/OpenFilesBridge";
 
 export const metadata: Metadata = {
   title: "HyesRead",
@@ -19,6 +20,7 @@ export default function RootLayout({
       style={{ colorScheme: 'dark' }}
     >
       <body className="antialiased bg-[#050505] text-white selection:bg-orange-500/30">
+        <OpenFilesBridge />
         {children}
       </body>
     </html>

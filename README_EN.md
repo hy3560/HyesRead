@@ -51,4 +51,11 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
+On Windows, also build the desktop app and verify that WebView2 renders an EPUB chapter:
+
+```powershell
+pnpm tauri build --bundles msi
+pnpm test:native
+```
+
 GitHub Actions builds the Windows installer for every main-branch update and pull request.
