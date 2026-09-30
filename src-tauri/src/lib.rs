@@ -156,32 +156,38 @@ async fn scan_library(folder_path: String) -> Result<Vec<BookMetadata>, String> 
     let mut clean_path = folder_path.as_str();
     if clean_path.starts_with(r"\\?\") { clean_path = &clean_path[4..]; }
     let root = Path::new(clean_path.trim_matches('"'));
-    
-    if !root.exists() { return Err("目录不存在".into()); }
 
-    let formats = vec![
-        "epub", "mobi", "azw3", "kf8", "pdf", "txt", "md",
-        "cbz", "fb2", "fbz"
-    ];
-
-    let entries: Vec<PathBuf> = WalkDir::new(root)
-        .max_depth(5)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_file())
-        .map(|e| e.path().to_path_buf())
-        .filter(|p| {
-            let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-            formats.contains(&ext.as_str())
-        })
-        .collect();
-
+    let entries = supported_book_files(root)?;
     let books: Vec<BookMetadata> = entries.into_par_iter()
         .map(BookAdapter::process)
         .collect();
 
     Ok(books)
+}
+
+fn supported_book_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    if !root.is_dir() { return Err("书库目录不存在或无法访问".into()); }
+    let formats = ["epub", "mobi", "azw3", "kf8", "pdf", "txt", "md", "cbz", "fb2", "fbz"];
+    let entries = WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| entry.depth() == 0 || !is_hidden(entry.file_name()))
+        .filter_map(|entry| match entry {
+            Ok(entry) if entry.file_type().is_file() => Some(Ok(entry.into_path())),
+            Ok(_) => None,
+            Err(error) => Some(Err(format!("扫描书库失败：{error}"))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let entries: Vec<PathBuf> = entries.into_iter().filter(|path| {
+        let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
+        formats.contains(&extension.as_str())
+    }).collect();
+    Ok(entries)
+}
+
+fn is_hidden(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name.starts_with('.')
 }
 
 #[tauri::command]
@@ -296,7 +302,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::supported_book_path;
+    use super::{supported_book_files, supported_book_path};
     use std::path::Path;
 
     #[test]
@@ -312,6 +318,27 @@ mod tests {
         );
         assert_eq!(supported_book_path(Path::new("missing.pdf"), &root), None);
         assert_eq!(supported_book_path(Path::new("image.png"), &root), None);
+
+        std::fs::remove_dir_all(root).expect("remove temporary book directory");
+    }
+
+    #[test]
+    fn library_scan_finds_books_beyond_five_levels_and_skips_hidden_folders() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("hyesread-deep-scan-{}-{nonce}", std::process::id()));
+        let deep = root.join("one/two/three/four/five/six/seven");
+        let hidden = root.join(".private");
+        std::fs::create_dir_all(&deep).expect("create nested book folder");
+        std::fs::create_dir_all(&hidden).expect("create hidden folder");
+        let nested_book = deep.join("deep.txt");
+        let hidden_book = hidden.join("hidden.txt");
+        std::fs::write(&nested_book, b"deep book").expect("create nested book");
+        std::fs::write(&hidden_book, b"hidden book").expect("create hidden book");
+
+        let found = supported_book_files(&root).expect("scan library");
+        assert_eq!(found, vec![nested_book]);
 
         std::fs::remove_dir_all(root).expect("remove temporary book directory");
     }
