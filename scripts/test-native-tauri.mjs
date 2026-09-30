@@ -1,6 +1,7 @@
 import { chromium } from "@playwright/test";
 import { spawn, spawnSync } from "node:child_process";
-import { access, copyFile, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import net from "node:net";
 import { dirname, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,11 +18,12 @@ const fixture = resolve(projectRoot, "tests/fixtures/hyesread-acceptance.epub");
 const storageDirectory = join(process.env.APPDATA ?? "", "com.hyes.read");
 const recoveryDirectory = await mkdtemp(join(tmpdir(), "hyesread-store-recovery-"));
 const webviewDirectory = await mkdtemp(join(tmpdir(), "hyesread-webview2-"));
-const managedStoreFiles = ["hyes_master.json", "hyes_stats.json"];
+const managedStoreFiles = ["hyes_master.json", "hyes_stats.json", "hyes_catalogs.json"];
 const originalStoreFiles = new Set();
 let app;
 let secondLaunch;
 let browser;
+let catalogServer;
 let storeSnapshotTaken = false;
 let appOutput = "";
 
@@ -297,6 +299,56 @@ try {
   });
   if (bookmarkCount !== 1) throw new Error(`WebView2 did not persist the EPUB bookmark: ${bookmarkCount}`);
 
+  log("checking OPDS navigation and pagination");
+  await page.getByRole("button", { name: "← 返回书库" }).click();
+  await page.getByRole("button", { name: "在线目录" }).click();
+  const epubBytes = await readFile(fixture);
+  catalogServer = createServer((request, response) => {
+    if (request.url === "/opds") {
+      response.writeHead(200, { "content-type": "application/atom+xml; charset=utf-8" });
+      response.end(`<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>本机 OPDS 验收</title><link rel="next" href="/opds?page=2" type="application/atom+xml;profile=opds-catalog"/><entry><id>acceptance-series</id><title>测试分类</title><link rel="subsection" href="/category.xml" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/></entry><entry><id>acceptance-book</id><title>在线验收电子书</title><author><name>HyesRead</name></author><summary>由本地 OPDS 服务提供。</summary><link rel="http://opds-spec.org/acquisition" href="/books/acceptance.epub" type="application/epub+zip" title="EPUB"/></entry></feed>`);
+      return;
+    }
+    if (request.url === "/opds?page=2") {
+      response.writeHead(200, { "content-type": "application/atom+xml; charset=utf-8" });
+      response.end(`<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>本机 OPDS 验收</title><entry><id>second-page-book</id><title>第二页书籍</title></entry></feed>`);
+      return;
+    }
+    if (request.url === "/category.xml") {
+      response.writeHead(200, { "content-type": "application/atom+xml; charset=utf-8" });
+      response.end(`<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>测试分类</title><entry><id>nested-book</id><title>分类内书籍</title></entry></feed>`);
+      return;
+    }
+    if (request.url === "/books/acceptance.epub") {
+      response.writeHead(200, { "content-type": "application/epub+zip", "content-length": epubBytes.length });
+      response.end(epubBytes);
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise((resolvePromise, reject) => {
+    catalogServer.once("error", reject);
+    catalogServer.listen(0, "127.0.0.1", resolvePromise);
+  });
+  const catalogAddress = catalogServer.address();
+  if (!catalogAddress || typeof catalogAddress === "string") throw new Error("Could not start the local OPDS test server.");
+  const catalogUrl = `http://127.0.0.1:${catalogAddress.port}/opds`;
+  await page.getByRole("textbox", { name: "OPDS 地址" }).fill(catalogUrl);
+  await page.getByRole("button", { name: "添加目录" }).click();
+  await page.getByRole("heading", { name: "本机 OPDS 验收" }).waitFor({ state: "visible", timeout: 10_000 });
+  await page.getByRole("button", { name: "打开 测试分类" }).click();
+  await page.getByRole("heading", { name: "测试分类" }).waitFor({ state: "visible", timeout: 10_000 });
+  await page.getByRole("button", { name: "返回上级目录" }).click();
+  await page.getByRole("heading", { name: "本机 OPDS 验收" }).waitFor({ state: "visible", timeout: 10_000 });
+  await page.getByRole("heading", { name: "在线验收电子书" }).waitFor({ state: "visible", timeout: 10_000 });
+  await page.getByRole("button", { name: "下一页" }).click();
+  await page.getByRole("heading", { name: "第二页书籍" }).waitFor({ state: "visible", timeout: 10_000 });
+
+  await page.getByRole("button", { name: "移除目录 本机 OPDS 验收" }).click();
+  await catalogServer.close();
+  catalogServer = undefined;
+
   log("checking PDF and second-instance forwarding");
   secondLaunch = spawn(executable, [pdfFixture], { cwd: projectRoot, stdio: "ignore", env: appEnvironment });
   const secondExitCode = await Promise.race([
@@ -494,8 +546,9 @@ try {
   await shelfPage.getByRole("button", { name: "打开《hyesread-native-acceptance》" }).waitFor({ state: "visible", timeout: 10_000 });
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 
-  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, pdfPageRendered: true, pdfSearch: true, pdfHighlight: true, pdfHighlightRestore: true, shelfRemovalPersists: true, sourceFilePreserved: true, secondLaunchForwarded: true }));
+  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, opdsNavigation: true, opdsPagination: true, pdfPageRendered: true, pdfSearch: true, pdfHighlight: true, pdfHighlightRestore: true, shelfRemovalPersists: true, sourceFilePreserved: true, secondLaunchForwarded: true }));
 } finally {
+  if (catalogServer) await new Promise(resolvePromise => catalogServer.close(resolvePromise));
   if (browser) await browser.close().catch(() => undefined);
   for (const child of [secondLaunch, app]) {
     if (child?.exitCode === null) {

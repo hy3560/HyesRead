@@ -10,6 +10,9 @@ use base64::{Engine as _, engine::general_purpose};
 use walkdir::WalkDir;
 use rayon::prelude::*;
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_fs::FsExt;
+
+mod opds;
 
 #[derive(Default)]
 struct OpenFileQueue {
@@ -233,6 +236,19 @@ async fn open_book(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn fetch_opds_feed(url: String) -> Result<opds::OpdsFeed, String> {
+    opds::fetch_feed(&url).await
+}
+
+#[tauri::command]
+async fn download_opds_book(app: tauri::AppHandle, url: String, destination: String) -> Result<String, String> {
+    if !app.fs_scope().is_allowed(&destination) {
+        return Err("请先在保存窗口中选择下载位置".to_string());
+    }
+    opds::download_book(&url, &destination).await
+}
+
+#[tauri::command]
 fn take_open_files(state: State<'_, OpenFileQueue>) -> Result<Vec<String>, String> {
     let mut ready = state.frontend_ready.lock().map_err(|e| e.to_string())?;
     let mut pending = state.pending.lock().map_err(|e| e.to_string())?;
@@ -270,7 +286,9 @@ pub fn run() {
             open_book,
             reveal_book,
             prepare_book_read,
-            take_open_files
+            take_open_files,
+            fetch_opds_feed,
+            download_opds_book
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
