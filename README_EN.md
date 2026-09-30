@@ -10,7 +10,7 @@ HyesRead is a local e-book reader that keeps your library, reading position, and
 - Search and sort your library by title or author.
 - Search text and the table of contents in reflowable formats, highlight passages, choose paginated or scrolled layout, and adjust font size, line spacing, and theme. Text-based PDFs also support text search, jumping to matching pages, and persistent passage highlights. TXT and Markdown support scrolling and the same display settings.
 - Add bookmarks and restore reading positions in supported formats. Your library, positions, highlights, bookmarks, and reading history stay on your device.
-- Export and merge a backup of your library index, positions, bookmarks, highlights, statistics, and catalog sources from Settings. Book files are not included, and reading data is associated with each book's original path.
+- Export and restore a backup of your library index, positions, bookmarks, highlights, statistics, and catalog sources from Settings. Book files are not included. On another device, select the library folder to restore reading data for books with a unique matching relative path; ambiguous matches are left untouched.
 - No account required. Library data and reading history stay on your device.
 - Catalogs currently use public OPDS Atom URLs; online catalogs are not available in the browser app.
 
