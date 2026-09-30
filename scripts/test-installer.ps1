@@ -79,6 +79,8 @@ try {
   }
 
   $stage = 'launch installed application with EPUB'
+  Get-Process -Name 'hyes-read' -ErrorAction SilentlyContinue | Stop-Process -Force
+  Start-Sleep -Milliseconds 500
   Write-Host 'Launching an EPUB through the installed application executable.'
   $appProcess = Start-Process -FilePath $appPath -ArgumentList @("`"$fixture`"") -PassThru
   $deadline = [DateTime]::UtcNow.AddSeconds(20)
