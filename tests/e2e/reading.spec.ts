@@ -195,6 +195,7 @@ test("portable browser-book backups restore the actual book after local storage 
   const backup = JSON.parse(await readFile(downloadPath!, "utf8"));
   expect(backup.browserBooks).toHaveLength(1);
   expect(backup.browserBooks[0].name).toBe("hyesread-acceptance.epub");
+  expect(backup.browserBooks[0].sha256).toMatch(/^[a-f0-9]{64}$/);
 
   await page.evaluate(async () => {
     localStorage.clear();
@@ -207,6 +208,16 @@ test("portable browser-book backups restore the actual book after local storage 
   await page.reload();
   await page.getByRole("button", { name: "设置" }).click();
   await page.getByRole("button", { name: "导入并合并" }).click();
+  const corruptedBackup = structuredClone(backup);
+  corruptedBackup.browserBooks[0].data = `${corruptedBackup.browserBooks[0].data[0] === "A" ? "B" : "A"}${corruptedBackup.browserBooks[0].data.slice(1)}`;
+  await page.locator('input[aria-label="选择 HyesRead 备份文件"]').setInputFiles({
+    name: "hyesread-backup-corrupt.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(corruptedBackup)),
+  });
+  await expect(page.locator('div[role="alert"].mb-5')).toContainText("书籍文件校验失败");
+  const shelfAfterRejectedImport = await page.evaluate(() => JSON.stringify(localStorage.getItem("hyes:hyes_master.json") || ""));
+  expect(shelfAfterRejectedImport).not.toContain(backup.browserBooks[0].id);
   await page.locator('input[aria-label="选择 HyesRead 备份文件"]').setInputFiles({
     name: download.suggestedFilename(),
     mimeType: "application/json",
