@@ -21,6 +21,12 @@ function Write-GitHubFailureSummary([string]$message) {
   if (-not $summaryPath) { return }
   $safeMessage = $message -replace '[\r\n]+', ' '
   Add-Content -LiteralPath $summaryPath -Value "`n### HyesRead MSI acceptance failed`n`n- Stage: ``$stage```n- Error: $safeMessage`n- Install log: ``$installLog```n- Uninstall log: ``$uninstallLog```n"
+  $outputPath = $env:GITHUB_OUTPUT
+  if ($outputPath) {
+    $outputMessage = $safeMessage.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+    Add-Content -LiteralPath $outputPath -Value "failure_message=$outputMessage"
+    Add-Content -LiteralPath $outputPath -Value "failure_stage=$stage"
+  }
 }
 
 function Get-HyesReadUninstallEntry {
@@ -91,7 +97,7 @@ try {
 } catch {
   $failureMessage = $_.Exception.Message -replace '[\r\n]+', ' '
   Write-GitHubFailureSummary $failureMessage
-  Write-Output "::error title=HyesRead MSI acceptance failed::$failureMessage"
+  Write-Output "::error title=HyesRead MSI acceptance failed::$stage - $failureMessage"
   throw
 }
 finally {
