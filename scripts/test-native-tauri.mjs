@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { dirname, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
@@ -344,9 +344,54 @@ try {
   if (!pdfSearchResult.includes("HyesRead")) throw new Error(`WebView2 PDF search did not find the passage: ${pdfSearchResult}`);
   await pdfReaderFrame.locator(".search-result").first().click();
   await delay(500);
+  log("checking shelf removal persistence without deleting the source file");
+  await page.getByRole("button", { name: "← 返回书库" }).click();
+  const cardDeadline = Date.now() + 10_000;
+  let bookLabel = "";
+  while (Date.now() < cardDeadline) {
+    const labels = await page.locator("button[aria-label^='打开《']").evaluateAll(elements => elements.map(element => element.getAttribute("aria-label") || ""));
+    bookLabel = labels.find(label => label.toLocaleLowerCase().includes("native-acceptance")) || "";
+    if (bookLabel) break;
+    await delay(100);
+  }
+  if (!bookLabel) {
+    const labels = await page.locator("button[aria-label]").evaluateAll(elements => elements.map(element => element.getAttribute("aria-label")));
+    throw new Error(`The externally opened PDF did not appear on the shelf. URL: ${page.url()}; buttons: ${JSON.stringify(labels)}`);
+  }
+  const nativeBook = page.locator(`button[aria-label=${JSON.stringify(bookLabel)}]`);
+  await nativeBook.waitFor({ state: "visible", timeout: 10_000 });
+  const title = bookLabel.slice("打开《".length, -1);
+  await page.getByRole("button", { name: `从书架移除《${title}》` }).click();
+  await nativeBook.waitFor({ state: "detached", timeout: 10_000 });
+  if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
+  await browser.close();
+  browser = undefined;
+  const appExit = new Promise(resolvePromise => app.once("exit", resolvePromise));
+  stopProcess(app);
+  await Promise.race([appExit, delay(5_000)]);
+  if (app.exitCode === null) throw new Error("The desktop app did not exit before the restart check.");
+  app = spawn(executable, [], { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], env: appEnvironment });
+  captureAppOutput(app.stdout, "stdout");
+  captureAppOutput(app.stderr, "stderr");
+  await waitForDebugEndpoint(port, app);
+  browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  let shelfPage;
+  const shelfDeadline = Date.now() + 30_000;
+  while (Date.now() < shelfDeadline) {
+    shelfPage = browser.contexts().flatMap(context => context.pages()).find(candidate => new URL(candidate.url()).pathname === "/");
+    if (shelfPage) break;
+    await delay(200);
+  }
+  if (!shelfPage) throw new Error("The restarted desktop app did not open its shelf.");
+  await shelfPage.getByRole("button", { name: "添加文件" }).waitFor({ state: "visible", timeout: 10_000 });
+  await shelfPage.locator("button[aria-label^='打开《']").first().waitFor({ state: "visible", timeout: 10_000 });
+  if (await shelfPage.locator("button[aria-label^='打开《']").evaluateAll(elements => elements.some(element => (element.getAttribute("aria-label") || "").toLocaleLowerCase().includes("native-acceptance")))) {
+    throw new Error("The removed PDF returned to the shelf after restarting the desktop app.");
+  }
+  await access(pdfFixture);
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 
-  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, pdfPageRendered: true, pdfSearch: true, secondLaunchForwarded: true }));
+  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, pdfPageRendered: true, pdfSearch: true, shelfRemovalPersists: true, sourceFilePreserved: true, secondLaunchForwarded: true }));
 } finally {
   if (browser) await browser.close().catch(() => undefined);
   for (const child of [secondLaunch, app]) {
