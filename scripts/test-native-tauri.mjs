@@ -333,9 +333,20 @@ try {
     const details = await pdfReaderFrame.evaluate(() => ({ title: document.title, text: document.body.innerText.slice(0, 250) }));
     throw new Error(`WebView2 did not render the one-page PDF correctly: ${JSON.stringify({ pdfState, details, frameUrl: pdfReaderFrame.url(), failures })}`);
   }
+  log("checking PDF text search in WebView2");
+  await page.getByRole("button", { name: "搜索正文" }).waitFor({ state: "visible", timeout: 10_000 });
+  await page.getByRole("button", { name: "搜索正文" }).click();
+  await pdfReaderFrame.locator("#search-query").fill("HyesRead");
+  await pdfReaderFrame.getByRole("button", { name: "搜索", exact: true }).click();
+  const pdfSearchDeadline = Date.now() + 10_000;
+  while (Date.now() < pdfSearchDeadline && await pdfReaderFrame.locator("#search-status").innerText() !== "1 处") await delay(100);
+  const pdfSearchResult = await pdfReaderFrame.locator(".search-result").first().innerText().catch(() => "");
+  if (!pdfSearchResult.includes("HyesRead")) throw new Error(`WebView2 PDF search did not find the passage: ${pdfSearchResult}`);
+  await pdfReaderFrame.locator(".search-result").first().click();
+  await delay(500);
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 
-  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, pdfPageRendered: true, secondLaunchForwarded: true }));
+  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, pdfPageRendered: true, pdfSearch: true, secondLaunchForwarded: true }));
 } finally {
   if (browser) await browser.close().catch(() => undefined);
   for (const child of [secondLaunch, app]) {

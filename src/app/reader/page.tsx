@@ -34,7 +34,7 @@ function ReaderContent() {
   const [highlightsOpen, setHighlightsOpen] = useState(false);
   const bookPath = params.get("path");
   const currentFormat = (bookTitle || bookPath || "").split(".").pop()?.toLowerCase();
-  const supportsTextSearch = ["epub", "mobi", "azw3", "kf8", "fb2", "fbz"].includes(currentFormat || "");
+  const supportsTextSearch = ["epub", "mobi", "azw3", "kf8", "fb2", "fbz", "pdf"].includes(currentFormat || "");
 
   useEffect(() => {
     const path = bookPath;
