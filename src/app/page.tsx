@@ -647,7 +647,7 @@ export default function HyesReadMaster() {
                 <div className="bg-white/[0.02] border border-white/5 p-8 rounded-[2rem] space-y-5">
                   <div>
                     <h2 className="text-lg font-serif text-white">备份与恢复</h2>
-                    <p className="mt-2 text-sm leading-6 text-zinc-400">备份包含阅读数据和浏览器导入的书籍文件；本机书库中的书籍仍保存在原位置。换设备后选择书籍文件夹，可按相对路径恢复阅读数据。备份文件含本机路径和目录地址，请妥善保存。</p>
+                    <p className="mt-2 text-sm leading-6 text-zinc-400">备份包含阅读数据和浏览器导入的书籍文件；本机书库中的书籍仍保存在原位置。换设备后选择书籍文件夹，可按相对路径恢复阅读数据。导出备份会移除目录地址中的账号和密码。</p>
                   </div>
                   <div className="flex flex-wrap gap-3">
                     <button type="button" onClick={() => void exportDataBackup()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black hover:bg-orange-400"><Download size={16} />导出备份</button>

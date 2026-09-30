@@ -9,7 +9,9 @@ use mobi::Mobi;
 use base64::{Engine as _, engine::general_purpose};
 use walkdir::WalkDir;
 use rayon::prelude::*;
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
+#[cfg(desktop)]
+use tauri::Emitter;
 use tauri_plugin_fs::FsExt;
 
 mod opds;
@@ -38,6 +40,7 @@ fn paths_from_args(args: impl IntoIterator<Item = OsString>, cwd: &Path) -> Vec<
         .collect()
 }
 
+#[cfg(desktop)]
 fn route_open_files(app: &tauri::AppHandle, paths: Vec<String>) {
     if paths.is_empty() {
         return;
@@ -264,12 +267,15 @@ fn take_open_files(state: State<'_, OpenFileQueue>) -> Result<Vec<String>, Strin
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .manage(OpenFileQueue::default())
-        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+    let builder = tauri::Builder::default().manage(OpenFileQueue::default());
+
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             let paths = paths_from_args(argv.into_iter().skip(1).map(OsString::from), Path::new(&cwd));
             route_open_files(app, paths);
-        }))
+        }));
+
+    builder
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

@@ -1,3 +1,5 @@
+use base64::Engine as _;
+use percent_encoding::percent_decode_str;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use serde::Serialize;
@@ -50,17 +52,6 @@ enum TextField {
     EntryTitle,
     EntryAuthor,
     EntrySummary,
-}
-
-fn validate_http_url(raw: &str) -> Result<Url, String> {
-    let url = Url::parse(raw.trim()).map_err(|_| "目录地址无效".to_string())?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err("目录只支持 HTTP 或 HTTPS 地址".to_string());
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("请使用不含账号密码的目录地址".to_string());
-    }
-    Ok(url)
 }
 
 fn local_name(name: &[u8]) -> String {
@@ -270,8 +261,40 @@ fn is_same_origin_redirect(previous: &[Url], next: &Url) -> bool {
     })
 }
 
-fn http_client() -> Result<reqwest::Client, String> {
+fn client_for_url(raw_url: &str) -> Result<(reqwest::Client, Url), String> {
+    let mut url = Url::parse(raw_url.trim()).map_err(|_| "目录地址无效".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err("目录只支持 HTTP 或 HTTPS 地址".to_string());
+    }
+    let username = percent_decode_str(url.username())
+        .decode_utf8()
+        .map_err(|_| "目录账号信息编码无效".to_string())?
+        .into_owned();
+    let password = url
+        .password()
+        .map(|value| {
+            percent_decode_str(value)
+                .decode_utf8()
+                .map(|value| value.into_owned())
+                .map_err(|_| "目录账号信息编码无效".to_string())
+        })
+        .transpose()?;
+    if !username.is_empty() || password.is_some() {
+        url.set_username("")
+            .map_err(|_| "目录地址无效".to_string())?;
+        url.set_password(None)
+            .map_err(|_| "目录地址无效".to_string())?;
+    }
+    let mut headers = reqwest::header::HeaderMap::new();
+    if !username.is_empty() {
+        let credential = format!("{username}:{}", password.unwrap_or_default());
+        let encoded = base64::engine::general_purpose::STANDARD.encode(credential.as_bytes());
+        let authorization = reqwest::header::HeaderValue::from_str(&format!("Basic {encoded}"))
+            .map_err(|_| "目录账号信息无效".to_string())?;
+        headers.insert(reqwest::header::AUTHORIZATION, authorization);
+    }
     reqwest::Client::builder()
+        .default_headers(headers)
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 8 {
@@ -284,6 +307,7 @@ fn http_client() -> Result<reqwest::Client, String> {
         }))
         .user_agent(concat!("HyesRead/", env!("CARGO_PKG_VERSION")))
         .build()
+        .map(|client| (client, url))
         .map_err(|error| format!("无法初始化网络连接：{error}"))
 }
 
@@ -309,8 +333,8 @@ async fn read_feed_response(response: reqwest::Response) -> Result<String, Strin
 }
 
 pub async fn fetch_feed(raw_url: &str) -> Result<OpdsFeed, String> {
-    let url = validate_http_url(raw_url)?;
-    let response = http_client()?
+    let (client, url) = client_for_url(raw_url)?;
+    let response = client
         .get(url.clone())
         .send()
         .await
@@ -342,7 +366,7 @@ fn temporary_download_path(destination: &Path) -> Result<PathBuf, String> {
 }
 
 pub async fn download_book(raw_url: &str, destination: &str) -> Result<String, String> {
-    let url = validate_http_url(raw_url)?;
+    let (client, url) = client_for_url(raw_url)?;
     let destination = PathBuf::from(destination);
     let extension = destination
         .extension()
@@ -368,7 +392,7 @@ pub async fn download_book(raw_url: &str, destination: &str) -> Result<String, S
     let temporary = temporary_download_path(&destination)?;
     let mut temporary_created = false;
     let result = async {
-        let mut response = http_client()?
+        let mut response = client
             .get(url)
             .send()
             .await
@@ -426,12 +450,16 @@ pub async fn download_book(raw_url: &str, destination: &str) -> Result<String, S
 
 #[cfg(test)]
 mod tests {
-    use super::{download_book, is_same_origin_redirect, parse_atom_feed, validate_http_url};
+    use super::{
+        client_for_url, download_book, fetch_feed, is_same_origin_redirect, parse_atom_feed,
+    };
+    use base64::Engine as _;
     use std::time::Duration;
+    use url::Url;
 
     #[test]
     fn parses_navigation_acquisition_and_pagination_links() {
-        let base = validate_http_url("http://127.0.0.1:8080/opds/").unwrap();
+        let base = Url::parse("http://127.0.0.1:8080/opds/").unwrap();
         let xml = r#"<?xml version="1.0" encoding="utf-8"?>
           <feed xmlns="http://www.w3.org/2005/Atom">
             <title>本地书库</title>
@@ -458,7 +486,7 @@ mod tests {
 
     #[test]
     fn parses_inline_atom_text_and_repeated_titles() {
-        let base = validate_http_url("https://catalog.example/opds").unwrap();
+        let base = Url::parse("https://catalog.example/opds").unwrap();
         let xml = r#"<feed xmlns="http://www.w3.org/2005/Atom">
           <title>目录 A &amp; B</title>
           <entry><id>id</id><title>第一本</title><author><name>作者</name></author>
@@ -473,18 +501,68 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsafe_or_credential_bearing_catalog_urls() {
-        assert!(validate_http_url("file:///C:/books").is_err());
-        assert!(validate_http_url("javascript:alert(1)").is_err());
-        assert!(validate_http_url("https://reader:secret@example.com/opds").is_err());
+    fn rejects_unsafe_catalog_urls_and_extracts_basic_credentials() {
+        assert!(client_for_url("file:///C:/books").is_err());
+        assert!(client_for_url("javascript:alert(1)").is_err());
+        let (client, url) = client_for_url("https://reader:secret@example.com/opds").unwrap();
+        assert_eq!(url.as_str(), "https://example.com/opds");
+        assert!(client.get(url).build().is_ok());
+    }
+
+    #[test]
+    fn authenticated_feed_requests_use_basic_auth_and_strip_credentials_from_links() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            loop {
+                let length = stream.read(&mut chunk).unwrap();
+                request.extend_from_slice(&chunk[..length]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&request);
+            let expected = format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode("user@x:pa:ss")
+            );
+            assert!(
+                request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("authorization") && value.trim() == expected
+                    })
+                }),
+                "request: {request}"
+            );
+            let xml = format!(
+                "<feed xmlns=\"http://www.w3.org/2005/Atom\"><title>Private</title><link rel=\"next\" href=\"http://{address}/next\" /></feed>"
+            );
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/atom+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", xml.len(), xml).unwrap();
+        });
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let feed = runtime
+            .block_on(fetch_feed(&format!(
+                "http://user%40x:pa%3Ass@{address}/feed"
+            )))
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(feed.title, "Private");
+        assert_eq!(feed.links[0].href, format!("http://{address}/next"));
+        assert!(!feed.links[0].href.contains("user:pass"));
     }
 
     #[test]
     fn redirect_policy_keeps_network_origin_fixed() {
-        let prior = validate_http_url("http://127.0.0.1:8765/feed").unwrap();
+        let prior = Url::parse("http://127.0.0.1:8765/feed").unwrap();
         assert!(is_same_origin_redirect(
             std::slice::from_ref(&prior),
-            &validate_http_url("http://127.0.0.1:8765/next").unwrap()
+            &Url::parse("http://127.0.0.1:8765/next").unwrap()
         ));
         for url in [
             "http://localhost:8765/next",
@@ -493,7 +571,7 @@ mod tests {
         ] {
             assert!(!is_same_origin_redirect(
                 std::slice::from_ref(&prior),
-                &validate_http_url(url).unwrap()
+                &Url::parse(url).unwrap()
             ));
         }
     }
@@ -510,7 +588,20 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0u8; 2048];
-            let _ = stream.read(&mut request);
+            let length = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..length]);
+            let expected = format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode("reader:secret")
+            );
+            assert!(
+                request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("authorization") && value.trim() == expected
+                    })
+                }),
+                "request: {request}"
+            );
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: application/epub+zip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -528,7 +619,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let saved = runtime
             .block_on(download_book(
-                &format!("http://{address}/book.epub"),
+                &format!("http://reader:secret@{address}/book.epub"),
                 destination.to_str().unwrap(),
             ))
             .unwrap();

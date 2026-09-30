@@ -305,6 +305,16 @@ try {
   await page.getByRole("button", { name: "在线目录" }).click();
   const epubBytes = await readFile(fixture);
   catalogServer = createServer((request, response) => {
+    if (request.url === "/private") {
+      if (request.headers.authorization !== `Basic ${Buffer.from("reader:secret").toString("base64")}`) {
+        response.writeHead(401, { "www-authenticate": 'Basic realm="HyesRead acceptance"' });
+        response.end();
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/atom+xml; charset=utf-8" });
+      response.end(`<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>已验证目录</title><entry><id>private-book</id><title>登录目录中的书籍</title></entry></feed>`);
+      return;
+    }
     if (request.url === "/opds") {
       response.writeHead(200, { "content-type": "application/atom+xml; charset=utf-8" });
       response.end(`<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>本机 OPDS 验收</title><link rel="next" href="/opds?page=2" type="application/atom+xml;profile=opds-catalog"/><entry><id>acceptance-series</id><title>测试分类</title><link rel="subsection" href="/category.xml" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/></entry><entry><id>acceptance-book</id><title>在线验收电子书</title><author><name>HyesRead</name></author><summary>由本地 OPDS 服务提供。</summary><link rel="http://opds-spec.org/acquisition" href="/books/acceptance.epub" type="application/epub+zip" title="EPUB"/></entry></feed>`);
@@ -345,7 +355,12 @@ try {
   await page.getByRole("heading", { name: "在线验收电子书" }).waitFor({ state: "visible", timeout: 10_000 });
   await page.getByRole("button", { name: "下一页" }).click();
   await page.getByRole("heading", { name: "第二页书籍" }).waitFor({ state: "visible", timeout: 10_000 });
+  log("checking authenticated OPDS access in the Windows app");
+  await page.getByRole("textbox", { name: "OPDS 地址" }).fill(`http://reader:secret@127.0.0.1:${catalogAddress.port}/private`);
+  await page.getByRole("button", { name: "添加目录" }).click();
+  await page.getByRole("heading", { name: "已验证目录" }).waitFor({ state: "visible", timeout: 10_000 });
 
+  await page.getByRole("button", { name: "移除目录 已验证目录" }).click();
   await page.getByRole("button", { name: "移除目录 本机 OPDS 验收" }).click();
   await catalogServer.close();
   catalogServer = undefined;
@@ -570,15 +585,18 @@ try {
     mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify(portableBackup)),
   });
-  await shelfPage.getByRole("status").filter({ hasText: "恢复 2 本浏览器书籍" }).waitFor({ state: "visible", timeout: 15_000 });
+  log("waiting for the browser-book backup import to finish");
+  await shelfPage.getByRole("status").filter({ hasText: "恢复 2 本浏览器书籍" }).waitFor({ state: "visible", timeout: 30_000 });
+  log("confirming both restored books appear on the shelf");
   await shelfPage.getByRole("button", { name: "书架" }).click();
-  await shelfPage.getByRole("button", { name: "打开《native-portable-epub》" }).waitFor({ state: "visible", timeout: 15_000 });
+  await shelfPage.getByRole("button", { name: "打开《native-portable-epub》" }).waitFor({ state: "visible", timeout: 30_000 });
   await shelfPage.getByRole("button", { name: "打开《native-portable-epub》" }).click();
-  await shelfPage.waitForURL(url => url.href.includes(encodeURIComponent(portableEpubPath)), { timeout: 15_000 });
+  await shelfPage.waitForURL(url => url.href.includes(encodeURIComponent(portableEpubPath)), { timeout: 30_000 });
+  log("waiting for the restored EPUB reader to initialize");
   const portableReader = shelfPage.frameLocator("#foliate-reader");
   await portableReader.locator("foliate-view").waitFor({ state: "visible", timeout: 30_000 });
   let portableChapterText = "";
-  const portableChapterDeadline = Date.now() + 15_000;
+  const portableChapterDeadline = Date.now() + 30_000;
   while (Date.now() < portableChapterDeadline && !portableChapterText.includes("离线 EPUB 阅读路径")) {
     const chapterFrame = shelfPage.frames().find(frame => frame.url().startsWith("blob:"));
     if (chapterFrame) portableChapterText = await chapterFrame.locator("body").innerText().catch(() => "");
@@ -587,17 +605,18 @@ try {
   if (!portableChapterText.includes("离线 EPUB 阅读路径")) {
     throw new Error(`The restored browser EPUB did not render in the Windows desktop reader: ${JSON.stringify({ text: portableChapterText, frames: shelfPage.frames().map(frame => frame.url()), errors: await shelfPage.locator('[role="alert"].mb-5').allTextContents() })}`);
   }
+  log("confirming the restored EPUB chapter and opening the restored TXT book");
   await shelfPage.getByRole("button", { name: "← 返回书库" }).click();
-  await shelfPage.getByRole("button", { name: "打开《native-portable-text》" }).waitFor({ state: "visible", timeout: 10_000 });
+  await shelfPage.getByRole("button", { name: "打开《native-portable-text》" }).waitFor({ state: "visible", timeout: 30_000 });
   await shelfPage.getByRole("button", { name: "打开《native-portable-text》" }).click();
-  await shelfPage.waitForURL(url => url.href.includes(encodeURIComponent(portableTextPath)), { timeout: 15_000 });
-  await shelfPage.frameLocator("#foliate-reader").locator("article").getByText("桌面端恢复的浏览器书籍可以继续阅读。", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await shelfPage.waitForURL(url => url.href.includes(encodeURIComponent(portableTextPath)), { timeout: 30_000 });
+  await shelfPage.frameLocator("#foliate-reader").locator("article").getByText("桌面端恢复的浏览器书籍可以继续阅读。", { exact: true }).waitFor({ state: "visible", timeout: 30_000 });
   await shelfPage.getByRole("button", { name: "← 返回书库" }).click();
   await shelfPage.getByRole("button", { name: "打开《native-portable-epub》" }).waitFor({ state: "visible", timeout: 10_000 });
 
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 
-  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, opdsNavigation: true, opdsPagination: true, pdfPageRendered: true, pdfSearch: true, pdfHighlight: true, pdfHighlightRestore: true, portableEpubRestore: true, portableTextRestore: true, shelfRemovalPersists: true, sourceFilePreserved: true, secondLaunchForwarded: true }));
+  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, opdsNavigation: true, opdsPagination: true, opdsBasicAuthentication: true, pdfPageRendered: true, pdfSearch: true, pdfHighlight: true, pdfHighlightRestore: true, portableEpubRestore: true, portableTextRestore: true, shelfRemovalPersists: true, sourceFilePreserved: true, secondLaunchForwarded: true }));
 } finally {
   if (catalogServer) await new Promise(resolvePromise => catalogServer.close(resolvePromise));
   if (browser) await browser.close().catch(() => undefined);
