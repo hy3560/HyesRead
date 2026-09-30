@@ -377,21 +377,21 @@ export default function HyesReadMaster() {
 
   return (
     <div className="flex h-screen w-screen bg-[#050505] text-zinc-300 font-sans overflow-hidden">
-      <nav className="w-20 flex flex-col items-center py-10 border-r border-white/5 bg-black/40 backdrop-blur-3xl z-30 relative">
+      <nav className="w-20 flex flex-col items-center py-10 border-r border-white/5 bg-black/40 backdrop-blur-3xl z-30 relative max-[640px]:fixed max-[640px]:inset-x-0 max-[640px]:bottom-0 max-[640px]:z-50 max-[640px]:h-16 max-[640px]:w-full max-[640px]:flex-row max-[640px]:justify-between max-[640px]:border-r-0 max-[640px]:border-t max-[640px]:border-white/10 max-[640px]:px-2 max-[640px]:py-2 max-[640px]:bg-black/90">
         <motion.div 
           animate={{ opacity: [0.3, 1, 0.3] }} 
           transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
-          className="text-orange-500 mb-12"
+          className="text-orange-500 mb-12 max-[640px]:hidden"
         >
           <BookOpen size={26} />
         </motion.div>
 
-        <div className="flex-1 flex flex-col gap-10">
+        <div className="flex-1 flex flex-col gap-10 max-[640px]:flex-row max-[640px]:items-center max-[640px]:justify-evenly max-[640px]:gap-0">
           <NavIcon label="首页" icon={<Clock size={20} />} active={activeTab === 'home'} onClick={() => setActiveTab('home')} />
           <NavIcon label="书架" icon={<Library size={20} />} active={activeTab === 'library'} onClick={() => setActiveTab('library')} />
           {isDesktop() && <NavIcon label="在线目录" icon={<Globe2 size={20} />} active={activeTab === 'catalog'} onClick={() => setActiveTab('catalog')} />}
         </div>
-        <div className="mb-4 flex flex-col gap-8">
+        <div className="mb-4 flex flex-col gap-8 max-[640px]:mb-0 max-[640px]:flex-1 max-[640px]:flex-row max-[640px]:items-center max-[640px]:justify-evenly max-[640px]:gap-0">
            <NavIcon label="阅读统计" icon={<NotebookPen size={20} />} active={activeTab === 'stats'} onClick={() => setActiveTab('stats')} className="text-blue-400" />
            <NavIcon label="设置" icon={<Settings2 size={20} />} active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
         </div>
@@ -457,7 +457,7 @@ export default function HyesReadMaster() {
           </div>
         </header>
 
-        <section className="flex-1 overflow-y-auto p-12 custom-scrollbar relative max-[640px]:p-4">
+        <section className="flex-1 overflow-y-auto p-12 custom-scrollbar relative max-[640px]:p-4 max-[640px]:pb-20">
           {operationError && (
             <div role="alert" className="mb-5 flex items-start justify-between gap-4 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-300">
               <span>{operationError}</span>
@@ -554,16 +554,16 @@ export default function HyesReadMaster() {
                       <Activity className="text-orange-500" />
                       <h2 className="text-lg font-serif text-white">阅读趋势</h2>
                     </div>
-                    <div className="flex gap-2 bg-black/50 p-1 rounded-xl border border-white/5">
+                    <div className="flex gap-2 bg-black/50 p-1 rounded-xl border border-white/5 max-[640px]:gap-0">
                       <button 
                         onClick={() => setChartRange('30days')}
-                        className={`px-4 py-1.5 text-[10px] font-bold rounded-lg transition-colors ${chartRange === '30days' ? 'bg-white/10 text-white shadow' : 'text-zinc-500 hover:text-white'}`}
+                        className={`px-4 py-1.5 text-[10px] font-bold rounded-lg transition-colors whitespace-nowrap max-[640px]:px-2 max-[640px]:text-[9px] ${chartRange === '30days' ? 'bg-white/10 text-white shadow' : 'text-zinc-500 hover:text-white'}`}
                       >
                         近 30 天
                       </button>
                       <button 
                         onClick={() => setChartRange('year')}
-                        className={`px-4 py-1.5 text-[10px] font-bold rounded-lg transition-colors ${chartRange === 'year' ? 'bg-white/10 text-white shadow' : 'text-zinc-500 hover:text-white'}`}
+                        className={`px-4 py-1.5 text-[10px] font-bold rounded-lg transition-colors whitespace-nowrap max-[640px]:px-2 max-[640px]:text-[9px] ${chartRange === 'year' ? 'bg-white/10 text-white shadow' : 'text-zinc-500 hover:text-white'}`}
                       >
                         今年
                       </button>
