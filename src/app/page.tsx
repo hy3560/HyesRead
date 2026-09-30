@@ -5,9 +5,10 @@ import { invoke, isDesktop, readValue, updateValue, writeValue } from "../lib/pl
 import { getBrowserBook, isBrowserBook, removeBrowserBook, saveBrowserBook } from "../lib/browserBooks";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useRouter } from "next/navigation";
+import OpdsCatalog from "../components/OpdsCatalog";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
-  Library, Settings2, Loader2, Ghost, 
+  Library, Settings2, Loader2, Ghost, Globe2,
   Clock, NotebookPen,
   HardDrive, FileType, FolderPlus, FilePlus, Book as BookIcon,
   BookOpen, Timer, Trophy, Activity, CalendarDays,
@@ -17,7 +18,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from "recharts";
 
-type ViewType = 'home' | 'library' | 'stats' | 'settings';
+type ViewType = 'home' | 'library' | 'catalog' | 'stats' | 'settings';
 
 interface Book {
   title: string; author: string; path: string; format: string; size: number; cover: string | null;
@@ -205,7 +206,7 @@ export default function HyesReadMaster() {
     finally { setIsScanning(false); }
   };
 
-  const handleImportFiles = async (paths: string[]) => {
+  const handleImportFiles = async (paths: string[]): Promise<boolean> => {
     setOperationError("");
     setIsScanning(true);
     try {
@@ -217,9 +218,11 @@ export default function HyesReadMaster() {
             result.forEach(b => map.set(b.path, b));
             return Array.from(map.values());
         });
+        return true;
     } catch (e: any) {
         console.error(e);
         setOperationError(`文件导入失败：${String(e)}`);
+        return false;
     } finally {
         setIsScanning(false);
     }
@@ -288,6 +291,7 @@ export default function HyesReadMaster() {
         <div className="flex-1 flex flex-col gap-10">
           <NavIcon label="首页" icon={<Clock size={20} />} active={activeTab === 'home'} onClick={() => setActiveTab('home')} />
           <NavIcon label="书架" icon={<Library size={20} />} active={activeTab === 'library'} onClick={() => setActiveTab('library')} />
+          {isDesktop() && <NavIcon label="在线目录" icon={<Globe2 size={20} />} active={activeTab === 'catalog'} onClick={() => setActiveTab('catalog')} />}
         </div>
         <div className="mb-4 flex flex-col gap-8">
            <NavIcon label="阅读统计" icon={<NotebookPen size={20} />} active={activeTab === 'stats'} onClick={() => setActiveTab('stats')} className="text-blue-400" />
@@ -407,6 +411,10 @@ export default function HyesReadMaster() {
                 ))}
                 </motion.div>
               </div>
+            )}
+
+            {!isScanning && activeTab === 'catalog' && (
+              <OpdsCatalog onImported={async path => handleImportFiles([path])} />
             )}
 
             {!isScanning && activeTab === 'stats' && (

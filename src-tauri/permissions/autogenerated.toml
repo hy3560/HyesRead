@@ -7,5 +7,7 @@ commands.allow = [
     "read_text_book",
     "reveal_book",
     "prepare_book_read",
-    "take_open_files"
+    "take_open_files",
+    "fetch_opds_feed",
+    "download_opds_book"
 ]
