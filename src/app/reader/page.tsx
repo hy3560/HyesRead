@@ -8,6 +8,8 @@ import { getBrowserBook, isBrowserBook } from "../../lib/browserBooks";
 
 type ReaderLocation = { fraction: number; location?: number; href?: string; chapter?: string };
 type Bookmark = { id: string; label: string; location: ReaderLocation; createdAt: number };
+type Highlight = { id: string; value: string; text: string; note: string; color: string; createdAt: number };
+type TextSelection = { value: string; text: string };
 type TextSettings = { fontSize: number; spacing: number; theme: "light" | "sepia" | "dark" };
 
 export default function ReaderPage() {
@@ -26,6 +28,10 @@ function ReaderContent() {
   const [currentLocation, setCurrentLocation] = useState<ReaderLocation | null>(null);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [pendingHighlights, setPendingHighlights] = useState<Set<string>>(() => new Set());
+  const [selection, setSelection] = useState<TextSelection | null>(null);
+  const [highlightsOpen, setHighlightsOpen] = useState(false);
   const bookPath = params.get("path");
   const currentFormat = (bookTitle || bookPath || "").split(".").pop()?.toLowerCase();
   const supportsTextSearch = ["epub", "mobi", "azw3", "kf8", "fb2", "fbz"].includes(currentFormat || "");
@@ -36,6 +42,9 @@ function ReaderContent() {
     setTextReady(false);
     setTextSettingsOpen(false);
     setBookmarksOpen(false);
+    setHighlightsOpen(false);
+    setPendingHighlights(new Set());
+    setSelection(null);
     if (!path) {
       setError("缺少书籍路径");
       return;
@@ -48,9 +57,12 @@ function ReaderContent() {
     let reportTime: (() => void) | undefined;
     const key = `hyes-reader-location:${path}`;
     const bookmarkKey = `hyes-bookmarks:${path}`;
+    const highlightKey = `hyes-highlights:${path}`;
     try {
       const stored = JSON.parse(localStorage.getItem(bookmarkKey) || "[]");
       setBookmarks(Array.isArray(stored) ? stored.filter((item): item is Bookmark => typeof item?.id === "string" && Number.isFinite(item?.location?.fraction) && item.location.fraction >= 0 && item.location.fraction <= 1) : []);
+      const savedHighlights = JSON.parse(localStorage.getItem(highlightKey) || "[]");
+      setHighlights(Array.isArray(savedHighlights) ? savedHighlights.filter((item): item is Highlight => typeof item?.id === "string" && typeof item?.value === "string" && typeof item?.text === "string") : []);
       const location = JSON.parse(localStorage.getItem(key) || "null");
       if (typeof location?.fraction === "number") setCurrentLocation(location);
     } catch {
@@ -165,6 +177,26 @@ function ReaderContent() {
         let saved = null;
         try { saved = JSON.parse(localStorage.getItem(key) || "null"); } catch { saved = null; }
         frame.contentWindow?.postMessage({ type: "hyesread:restore", location: saved }, "*");
+        let savedHighlights: Highlight[] = [];
+        try { savedHighlights = JSON.parse(localStorage.getItem(highlightKey) || "[]"); } catch { savedHighlights = []; }
+        frame.contentWindow?.postMessage({ type: "hyesread:annotations", annotations: savedHighlights.map(({ value, note, color }) => ({ value, note, color })) }, "*");
+      } else if (event.data?.type === "hyesread:selection") {
+        const next = event.data.selection;
+        if (typeof next?.value === "string" && typeof next?.text === "string" && next.text.trim()) setSelection({ value: next.value, text: next.text });
+      } else if (event.data?.type === "hyesread:annotation-open") {
+        setHighlightsOpen(true);
+      } else if (event.data?.type === "hyesread:annotation-added" && typeof event.data.value === "string") {
+        setPendingHighlights(current => { const next = new Set(current); next.delete(event.data.value); return next; });
+      } else if (event.data?.type === "hyesread:annotation-error" && typeof event.data.value === "string") {
+        const failedValue = event.data.value;
+        setPendingHighlights(current => { const next = new Set(current); next.delete(failedValue); return next; });
+        try {
+          const savedHighlights = JSON.parse(localStorage.getItem(highlightKey) || "[]");
+          const next = Array.isArray(savedHighlights) ? savedHighlights.filter(item => item?.value !== failedValue) : [];
+          localStorage.setItem(highlightKey, JSON.stringify(next));
+          setHighlights(next);
+        } catch { setHighlights(current => current.filter(item => item.value !== failedValue)); }
+        setError(`无法恢复或显示高亮：${event.data.message || "书籍位置无效"}`);
       } else if (event.data?.type === "hyesread:error") {
         setError(`无法打开这本书：${event.data.message || "文件格式或内容无效"}`);
       }
@@ -246,12 +278,52 @@ function ReaderContent() {
     setBookmarksOpen(false);
   };
 
+  const addHighlight = () => {
+    if (!bookPath || !selection || !supportsTextSearch) return;
+    if (highlights.some(item => item.value === selection.value)) { setSelection(null); return; }
+    const annotation: Highlight = {
+      id: crypto.randomUUID(), value: selection.value, text: selection.text,
+      note: selection.text, color: "#facc15", createdAt: Date.now(),
+    };
+    const next = [annotation, ...highlights].slice(0, 1000);
+    try {
+      localStorage.setItem(`hyes-highlights:${bookPath}`, JSON.stringify(next));
+      setHighlights(next);
+      setPendingHighlights(current => new Set(current).add(annotation.value));
+      (document.getElementById("foliate-reader") as HTMLIFrameElement | null)?.contentWindow?.postMessage({
+        type: "hyesread:add-annotation", annotation: { value: annotation.value, note: annotation.note, color: annotation.color },
+      }, "*");
+      setSelection(null);
+    } catch (e) { setError(`无法保存高亮：${e}`); }
+  };
+
+  const openHighlight = (highlight: Highlight) => {
+    (document.getElementById("foliate-reader") as HTMLIFrameElement | null)?.contentWindow?.postMessage({
+      type: "hyesread:show-annotation", value: highlight.value,
+    }, "*");
+    setHighlightsOpen(false);
+  };
+
+  const deleteHighlight = (highlight: Highlight) => {
+    if (!bookPath) return;
+    const next = highlights.filter(item => item.id !== highlight.id);
+    try {
+      localStorage.setItem(`hyes-highlights:${bookPath}`, JSON.stringify(next));
+      setHighlights(next);
+      (document.getElementById("foliate-reader") as HTMLIFrameElement | null)?.contentWindow?.postMessage({
+        type: "hyesread:remove-annotation", value: highlight.value,
+      }, "*");
+    } catch (e) { setError(`无法删除高亮：${e}`); }
+  };
+
   return (
     <main className="h-screen w-screen bg-[#050505] text-zinc-100 flex flex-col">
       <header className="relative h-14 shrink-0 border-b border-white/10 flex items-center gap-3 px-5 max-[640px]:gap-1 max-[640px]:px-2">
         <button onClick={() => router.back()} className="rounded-lg px-3 py-2 hover:bg-white/10">← 返回书库</button>
         <span className="min-w-0 flex-1 text-sm text-zinc-400 truncate">{bookTitle || bookPath?.split(/[\\/]/).pop()}</span>
         {readerReady && supportsTextSearch && <button type="button" aria-label="搜索正文" onClick={() => (document.getElementById("foliate-reader") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ type: "hyesread:toggle-search" }, "*")} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 max-[640px]:px-2">搜索</button>}
+        {readerReady && supportsTextSearch && <button type="button" aria-label="高亮所选文字" onClick={addHighlight} disabled={!selection} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-40 max-[640px]:px-2">高亮</button>}
+        {readerReady && supportsTextSearch && <button type="button" aria-label="打开高亮列表" onClick={() => setHighlightsOpen(open => !open)} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 max-[640px]:px-2">标注 {highlights.length}</button>}
         {(readerReady || textReady) && <button type="button" aria-label="阅读设置" onClick={() => {
           if (textReady) setTextSettingsOpen(open => !open);
           else (document.getElementById("foliate-reader") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ type: "hyesread:toggle-settings" }, "*");
@@ -259,6 +331,7 @@ function ReaderContent() {
         {(readerReady || textReady) && <button type="button" aria-label="添加或移除当前书签" onClick={addBookmark} disabled={!currentLocation} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-40 max-[640px]:px-2">{bookmarks.some(mark => mark.location.href === currentLocation?.href && Math.abs(mark.location.fraction - (currentLocation?.fraction || 0)) < 0.003) ? "已标记" : "书签"}</button>}
         {(readerReady || textReady) && <button type="button" aria-label="打开书签列表" onClick={() => setBookmarksOpen(value => !value)} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 max-[640px]:px-2">{bookmarks.length}</button>}
         {bookmarksOpen && <section aria-label="书签列表" className="absolute right-4 top-14 z-20 max-h-[65vh] w-80 overflow-auto rounded-xl border border-white/10 bg-[#141414] p-3 shadow-2xl max-[640px]:right-1 max-[640px]:w-[calc(100vw-8px)]">{bookmarks.length ? bookmarks.map(mark => <div key={mark.id} className="flex items-center gap-2 border-b border-white/5 py-1 last:border-0"><button type="button" onClick={() => goToBookmark(mark)} className="min-w-0 flex-1 truncate rounded-lg px-2 py-2 text-left text-sm text-zinc-200 hover:bg-white/10">{mark.label} · {Math.round(mark.location.fraction * 100)}%</button><button type="button" aria-label={`删除书签 ${mark.label}`} onClick={() => { const next = bookmarks.filter(item => item.id !== mark.id); try { localStorage.setItem(`hyes-bookmarks:${bookPath}`, JSON.stringify(next)); setBookmarks(next); } catch (e) { setError(`无法删除书签：${e}`); } }} className="px-2 py-2 text-zinc-500 hover:text-red-300">×</button></div>) : <div aria-hidden="true" className="h-10" />}</section>}
+        {highlightsOpen && <section aria-label="高亮列表" className="absolute right-4 top-14 z-20 max-h-[65vh] w-80 overflow-auto rounded-xl border border-white/10 bg-[#141414] p-3 shadow-2xl max-[640px]:right-1 max-[640px]:w-[calc(100vw-8px)]">{highlights.length ? highlights.map(item => <div key={item.id} className="flex items-center gap-2 border-b border-white/5 py-1 last:border-0"><button type="button" onClick={() => openHighlight(item)} className="min-w-0 flex-1 rounded-lg px-2 py-2 text-left text-sm text-zinc-200 hover:bg-white/10 line-clamp-3">{item.text}</button><button type="button" aria-label="删除高亮" disabled={pendingHighlights.has(item.value)} onClick={() => deleteHighlight(item)} className="px-2 py-2 text-zinc-500 hover:text-red-300 disabled:opacity-40">×</button></div>) : <div aria-hidden="true" className="h-10" />}</section>}
         {textReady && textSettingsOpen && <section aria-label="阅读设置" className="absolute right-4 top-14 z-20 grid w-80 gap-4 rounded-xl border border-white/10 bg-[#141414] p-4 shadow-2xl max-[640px]:right-1 max-[640px]:w-[calc(100vw-8px)]">
           <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">字号<input aria-label="字号" type="range" min="14" max="32" step="1" value={textSettings.fontSize} onChange={event => setTextSettings(settings => ({ ...settings, fontSize: Number(event.target.value) }))} /></label>
           <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">行距<input aria-label="行距" type="range" min="1.2" max="2.2" step="0.1" value={textSettings.spacing} onChange={event => setTextSettings(settings => ({ ...settings, spacing: Number(event.target.value) }))} /></label>

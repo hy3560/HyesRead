@@ -250,6 +250,46 @@ try {
   const searchResult = await readerFrame.locator(".search-result").first().innerText().catch(() => "");
   if (!searchResult.includes("离线 EPUB 阅读路径")) throw new Error(`WebView2 EPUB search did not find the passage: ${searchResult}`);
 
+  const selectedPassage = await readerFrame.locator("foliate-view").evaluate(() => {
+    const contents = window.reader?.view?.renderer?.getContents?.() ?? [];
+    for (const { doc } of contents) {
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        const text = node.textContent || "";
+        const start = text.indexOf("离线 EPUB 阅读路径");
+        if (start < 0) continue;
+        const range = doc.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + "离线 EPUB 阅读路径".length);
+        const selection = doc.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return true;
+      }
+    }
+    return false;
+  });
+  if (!selectedPassage) throw new Error("WebView2 could not select the EPUB passage for highlighting.");
+  await page.getByRole("button", { name: "高亮所选文字" }).click();
+  let highlightState = { count: 0, rendered: 0 };
+  const highlightDeadline = Date.now() + 10_000;
+  while (Date.now() < highlightDeadline && (highlightState.count !== 1 || highlightState.rendered !== 1)) {
+    highlightState = await page.evaluate(() => {
+      const entry = Object.entries(localStorage).find(([key]) => key.startsWith("hyes-highlights:"));
+      return {
+        count: entry ? JSON.parse(entry[1]).length : 0,
+        rendered: document.querySelector("#foliate-reader")?.contentWindow?.reader?.annotationsByValue?.size || 0,
+      };
+    });
+    if (highlightState.count !== 1 || highlightState.rendered !== 1) await delay(100);
+  }
+  if (highlightState.count !== 1 || highlightState.rendered !== 1) {
+    throw new Error(`WebView2 did not persist and render the EPUB highlight: ${JSON.stringify(highlightState)}`);
+  }
+  await page.getByRole("button", { name: "打开高亮列表" }).click();
+  await page.getByRole("button", { name: /离线 EPUB 阅读路径/ }).click();
+
   await page.getByRole("button", { name: "添加或移除当前书签" }).click();
   const bookmarkCount = await page.evaluate(() => {
     const entry = Object.entries(localStorage).find(([key]) => key.startsWith("hyes-bookmarks:"));
@@ -295,7 +335,7 @@ try {
   }
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 
-  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, readerSettings: true, bookmarks: true, pdfPageRendered: true, secondLaunchForwarded: true }));
+  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, pdfPageRendered: true, secondLaunchForwarded: true }));
 } finally {
   if (browser) await browser.close().catch(() => undefined);
   for (const child of [secondLaunch, app]) {

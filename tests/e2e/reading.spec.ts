@@ -221,6 +221,75 @@ test("searches EPUB body text and opens a matching passage", async ({ page }) =>
   await expect.poll(() => reader.locator("#progress-slider").getAttribute("title")).toContain("Loc");
 });
 
+test("saves and restores EPUB text highlights without modal prompts", async ({ page }) => {
+  let modalDialogs = 0;
+  page.on("dialog", async dialog => { modalDialogs++; await dialog.dismiss(); });
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles(resolve("tests/fixtures/hyesread-acceptance.epub"));
+  await page.getByRole("button", { name: "打开《hyesread-acceptance》" }).click();
+
+  let reader = page.frameLocator("#foliate-reader");
+  await expect(reader.locator("foliate-view")).toBeVisible();
+  await expect.poll(() => reader.locator("body").evaluate(() => {
+    const host = window as unknown as { reader?: { view?: { renderer?: { getContents?: () => { doc: Document }[] } } } };
+    return host.reader?.view?.renderer?.getContents?.().some(({ doc }) => doc.body.textContent?.includes("离线 EPUB 阅读路径")) || false;
+  })).toBe(true);
+  const selected = await reader.locator("foliate-view").evaluate(() => {
+    const host = window as unknown as { reader?: { view?: { renderer?: { getContents?: () => { doc: Document }[] } } } };
+    for (const { doc } of host.reader?.view?.renderer?.getContents?.() ?? []) {
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        const text = node.textContent || "";
+        const start = text.indexOf("离线 EPUB 阅读路径");
+        if (start < 0) continue;
+        const range = doc.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + "离线 EPUB 阅读路径".length);
+        const selection = doc.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return true;
+      }
+    }
+    return false;
+  });
+  expect(selected).toBe(true);
+  const highlightButton = page.getByRole("button", { name: "高亮所选文字" });
+  await expect(highlightButton).toBeEnabled();
+  await highlightButton.click();
+  await expect(page.getByRole("button", { name: "打开高亮列表" })).toContainText("1");
+  await expect.poll(() => page.evaluate(() => {
+    const entry = Object.entries(localStorage).find(([key]) => key.startsWith("hyes-highlights:"));
+    return entry ? JSON.parse(entry[1]).length : 0;
+  })).toBe(1);
+
+  await page.reload();
+  reader = page.frameLocator("#foliate-reader");
+  await expect.poll(() => reader.locator("body").evaluate(() => {
+    const host = window as unknown as { reader?: { annotationsByValue?: Map<string, unknown> } };
+    return host.reader?.annotationsByValue?.size || 0;
+  })).toBe(1);
+  await page.getByRole("button", { name: "打开高亮列表" }).click();
+  await expect(page.getByRole("region", { name: "高亮列表" })).toContainText("离线 EPUB 阅读路径");
+  await page.getByRole("button", { name: "离线 EPUB 阅读路径" }).click();
+  await expect.poll(() => reader.locator("body").evaluate(() => {
+    const host = window as unknown as { reader?: { view?: { renderer?: { getContents?: () => { overlayer?: { element?: SVGSVGElement } }[] } } } };
+    return host.reader?.view?.renderer?.getContents?.().some(item => (item.overlayer?.element?.childElementCount || 0) > 0) || false;
+  })).toBe(true);
+  expect(modalDialogs).toBe(0);
+  await expect(page.getByRole("region", { name: "高亮列表" })).toBeVisible();
+  await page.getByRole("button", { name: "删除高亮" }).click();
+  await expect(page.getByRole("button", { name: "打开高亮列表" })).toContainText("0");
+  await expect.poll(() => reader.locator("body").evaluate(() => {
+    const host = window as unknown as { reader?: { annotationsByValue?: Map<string, unknown> } };
+    return host.reader?.annotationsByValue?.size || 0;
+  })).toBe(0);
+});
+
 test("saves, restores, and removes EPUB bookmarks", async ({ page }) => {
   await page.goto("/");
   const chooserPromise = page.waitForEvent("filechooser");
