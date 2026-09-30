@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 function createPdfFixture(pageCount = 1) {
@@ -82,6 +83,63 @@ test("keeps the empty shelf free of instructional copy", async ({ page }) => {
   await expect(page.getByText("书架是空的，添加几本书开始阅读。", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "首页" }).click();
   await expect(page.getByText("书库还是空的，请先导入书籍", { exact: true })).toHaveCount(0);
+});
+
+test("exports a backup and merges imported reading data without replacing current progress", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("hyes:hyes_master.json", JSON.stringify({ discrete_files: ["browser-book:existing"] }));
+    localStorage.setItem("hyes:hyes_stats.json", JSON.stringify({ sessions: [{ date: "2026-09-30", duration: 20, bookPath: "book.epub" }] }));
+    localStorage.setItem("hyes-bookmarks:book.epub", JSON.stringify([{ id: "existing-bookmark", label: "现有书签", location: { fraction: 0.2 }, createdAt: 1 }]));
+    localStorage.setItem("hyes-reader-location:book.epub", JSON.stringify({ fraction: 0.25 }));
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).click();
+  const exportButton = page.getByRole("button", { name: "导出备份" });
+  await expect(exportButton).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await exportButton.click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^hyesread-backup-\d{4}-\d{2}-\d{2}\.json$/);
+  const downloadPath = await download.path();
+  expect(downloadPath).not.toBeNull();
+  const exported = JSON.parse(await readFile(downloadPath!, "utf8"));
+  expect(exported.format).toBe("hyesread-backup");
+  expect(exported.master.discreteFiles).toEqual(["browser-book:existing"]);
+  expect(exported.readerData["hyes-reader-location:book.epub"]).toBe(JSON.stringify({ fraction: 0.25 }));
+
+  const importedBackup = {
+    format: "hyesread-backup",
+    version: 1,
+    exportedAt: "2026-09-29T00:00:00.000Z",
+    master: { libraryPath: "", discreteFiles: ["browser-book:imported"], excludedFiles: [], lastOpenedBook: "" },
+    sessions: [
+      { date: "2026-09-30", duration: 30, bookPath: "book.epub" },
+      { date: "2026-09-29", duration: 10, bookPath: "book.epub" },
+    ],
+    catalogs: [],
+    readerData: {
+      "hyes-bookmarks:book.epub": JSON.stringify([{ id: "imported-bookmark", label: "导入书签", location: { fraction: 0.8 }, createdAt: 2 }]),
+      "hyes-reader-location:book.epub": JSON.stringify({ fraction: 0.8 }),
+    },
+  };
+  await page.getByRole("button", { name: "导入并合并" }).click();
+  await page.locator('input[aria-label="选择 HyesRead 备份文件"]').setInputFiles({
+    name: "hyesread-backup.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(importedBackup)),
+  });
+  await expect(page.getByRole("status")).toContainText("备份数据已合并");
+  const result = await page.evaluate(() => ({
+    discrete: JSON.parse(localStorage.getItem("hyes:hyes_master.json") || "{}").discrete_files,
+    sessions: JSON.parse(localStorage.getItem("hyes:hyes_stats.json") || "{}").sessions,
+    bookmarks: JSON.parse(localStorage.getItem("hyes-bookmarks:book.epub") || "[]"),
+    location: JSON.parse(localStorage.getItem("hyes-reader-location:book.epub") || "null"),
+  }));
+  expect(result.discrete).toEqual(["browser-book:existing", "browser-book:imported"]);
+  expect(result.sessions).toHaveLength(2);
+  expect(result.sessions.find((session: { date: string }) => session.date === "2026-09-30").duration).toBe(30);
+  expect(result.bookmarks.map((bookmark: { id: string }) => bookmark.id)).toEqual(["existing-bookmark", "imported-bookmark"]);
+  expect(result.location.fraction).toBe(0.25);
 });
 
 test("opens an uploaded PDF in the bundled reader", async ({ page }) => {

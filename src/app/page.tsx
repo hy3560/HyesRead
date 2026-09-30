@@ -1,18 +1,19 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { invoke, isDesktop, readValue, updateValue, writeValue } from "../lib/platform";
 import { getBrowserBook, isBrowserBook, removeBrowserBook, saveBrowserBook } from "../lib/browserBooks";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useRouter } from "next/navigation";
 import OpdsCatalog from "../components/OpdsCatalog";
+import { createBackup, downloadBackup, restoreBackup } from "../lib/backup";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Library, Settings2, Loader2, Ghost, Globe2,
   Clock, NotebookPen,
   HardDrive, FileType, FolderPlus, FilePlus, Book as BookIcon,
   BookOpen, Timer, Trophy, Activity, CalendarDays,
-  Search, List, Save
+  Search, List, Save, Download, Upload
 } from "lucide-react";
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
@@ -54,6 +55,50 @@ export default function HyesReadMaster() {
   const [sortMode, setSortMode] = useState<"title" | "author" | "recent">("recent");
   const [lastOpenedBook, setLastOpenedBook] = useState("");
   const [operationError, setOperationError] = useState("");
+  const [backupMessage, setBackupMessage] = useState("");
+  const backupInput = useRef<HTMLInputElement>(null);
+
+  const exportDataBackup = async () => {
+    setOperationError("");
+    setBackupMessage("");
+    try {
+      const backup = await createBackup();
+      downloadBackup(backup);
+      setBackupMessage("备份文件已生成。书籍原文件仍保存在原位置。 ");
+    } catch (error) {
+      setOperationError(`生成备份失败：${String(error)}`);
+    }
+  };
+
+  const importDataBackup = async (file?: File) => {
+    if (!file) return;
+    setOperationError("");
+    setBackupMessage("");
+    try {
+      if (file.size > 50 * 1024 * 1024) throw new Error("备份文件超过 50 MB 限制");
+      await restoreBackup(await file.text());
+      const [discretePaths, storedSessions] = await Promise.all([
+        readValue<string[]>("hyes_master.json", "discrete_files", []),
+        readValue<ReadingSession[]>("hyes_stats.json", "sessions", []),
+      ]);
+      setSessions(storedSessions);
+      if (isDesktop()) {
+        const restored = await invoke<Book[]>("import_files", { filePaths: discretePaths });
+        setBooks(current => mergeBooks(current, restored));
+      } else {
+        const restored = await Promise.all(discretePaths.filter(isBrowserBook).map(async path => {
+          const book = await getBrowserBook(path);
+          return book ? { title: book.name.replace(/\.[^.]+$/, ""), author: "", path, format: book.name.split(".").pop()?.toUpperCase() || "BOOK", size: book.size / 1048576, cover: null } satisfies Book : null;
+        }));
+        setBooks(current => mergeBooks(current, restored.filter((book): book is Book => book !== null)));
+      }
+      setBackupMessage("备份数据已合并。书籍文件没有复制；缺失的文件请重新导入。 ");
+    } catch (error) {
+      setOperationError(`恢复备份失败：${String(error)}`);
+    } finally {
+      if (backupInput.current) backupInput.current.value = "";
+    }
+  };
 
   const stats = useMemo(() => {
     const totalCount = books.length;
@@ -543,6 +588,18 @@ export default function HyesReadMaster() {
                   <h2 className="text-lg font-serif text-white">阅读设置</h2>
                   <div className="flex items-center gap-3 text-sm text-zinc-400"><BookOpen size={18} className="text-orange-400" /> 书籍、阅读位置和统计保存在本机。</div>
                   <p className="text-xs text-zinc-600">支持 EPUB、PDF、MOBI/KF8、FB2/FBZ、CBZ、TXT 和 Markdown。</p>
+                </div>
+                <div className="bg-white/[0.02] border border-white/5 p-8 rounded-[2rem] space-y-5">
+                  <div>
+                    <h2 className="text-lg font-serif text-white">备份与恢复</h2>
+                    <p className="mt-2 text-sm leading-6 text-zinc-400">备份包含书架索引、阅读位置、书签、标注、统计和目录来源。书籍原文件不包含在备份中；换设备后需重新导入书籍。备份文件含本机路径和目录地址，请妥善保存。</p>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    <button type="button" onClick={() => void exportDataBackup()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black hover:bg-orange-400"><Download size={16} />导出备份</button>
+                    <button type="button" onClick={() => backupInput.current?.click()} className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-zinc-200 hover:bg-white/10"><Upload size={16} />导入并合并</button>
+                    <input ref={backupInput} type="file" accept=".json,application/json" aria-label="选择 HyesRead 备份文件" className="hidden" onChange={event => void importDataBackup(event.target.files?.[0])} />
+                  </div>
+                  {backupMessage && <p role="status" className="text-sm text-emerald-300">{backupMessage}</p>}
                 </div>
               </motion.div>
             )}
