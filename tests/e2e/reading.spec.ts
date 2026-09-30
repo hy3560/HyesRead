@@ -438,6 +438,28 @@ test("supports text-book progress and bookmarks across reloads", async ({ page }
   await expect.poll(() => frame.locator("html").evaluate(element => element.scrollTop / Math.max(1, element.scrollHeight - element.clientHeight))).toBeGreaterThan(0.5);
 });
 
+test("records short reading sessions and splits them at local midnight", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-09-30T23:59:50") });
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles({ name: "short-session.txt", mimeType: "text/plain", buffer: Buffer.from("阅读计时验收正文") });
+  await page.getByRole("button", { name: "打开《short-session》" }).click();
+  await expect(page.frameLocator("#foliate-reader").locator("article")).toContainText("阅读计时验收正文");
+
+  await page.clock.fastForward(16_000);
+  await page.goto("/");
+  const sessions = await page.evaluate(() => {
+    const stats = JSON.parse(localStorage.getItem("hyes:hyes_stats.json") || "{}");
+    return stats.sessions as { date: string; duration: number }[];
+  });
+  expect(sessions.map(session => session.date).sort()).toEqual(["2026-09-30", "2026-10-01"]);
+  const totalMinutes = sessions.reduce((total, session) => total + session.duration, 0);
+  expect(totalMinutes).toBeGreaterThan(0.25);
+  expect(totalMinutes).toBeLessThan(0.28);
+});
+
 test("opens a multi-page PDF and restores the selected page", async ({ page }) => {
   await page.goto("/");
   const chooserPromise = page.waitForEvent("filechooser");
