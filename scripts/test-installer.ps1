@@ -9,6 +9,8 @@ $fixture = (Resolve-Path -LiteralPath 'tests/fixtures/hyesread-acceptance.epub')
 $uninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
 $associationKey = 'HKLM:\SOFTWARE\Classes\HyesRead.epub'
 $installRegistryKey = 'HKCU:\Software\hyes\HyesRead'
+$installLog = Join-Path ([IO.Path]::GetTempPath()) 'hyesread-msi-install.log'
+$uninstallLog = Join-Path ([IO.Path]::GetTempPath()) 'hyesread-msi-uninstall.log'
 $appProcess = $null
 $productCode = $null
 $appPath = $null
@@ -16,19 +18,26 @@ $appPath = $null
 function Get-HyesReadUninstallEntry {
   Get-ChildItem -LiteralPath $uninstallKey -ErrorAction SilentlyContinue |
     ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } |
-    Where-Object { $_.DisplayName -eq 'HyesRead' } |
+    Where-Object { $_.DisplayName -like '*HyesRead*' } |
     Select-Object -First 1
 }
 
 try {
   Write-Host 'Installing the Windows MSI on the isolated runner.'
-  $install = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', "`"$resolvedMsi`"", '/qn', '/norestart', 'AUTOLAUNCHAPP=') -Wait -PassThru
+  $install = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', "`"$resolvedMsi`"", '/qn', '/norestart', 'AUTOLAUNCHAPP=', '/l*v', "`"$installLog`"") -Wait -PassThru
   if ($install.ExitCode -notin @(0, 3010)) {
-    throw "MSI installation failed with exit code $($install.ExitCode)."
+    $details = if (Test-Path -LiteralPath $installLog) { (Get-Content -LiteralPath $installLog -Tail 80) -join "`n" } else { 'No MSI verbose log was created.' }
+    throw "MSI installation failed with exit code $($install.ExitCode).`n$details"
   }
 
   $entry = Get-HyesReadUninstallEntry
-  if (-not $entry) { throw 'HyesRead was not registered in the Windows uninstall list.' }
+  if (-not $entry) {
+    $installedApps = Get-ChildItem -LiteralPath $uninstallKey -ErrorAction SilentlyContinue |
+      ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } |
+      Where-Object { $_.DisplayName -match 'Hyes|Read' } |
+      ForEach-Object { "$($_.DisplayName) [$($_.PSChildName)]" }
+    throw "HyesRead was not registered in the Windows uninstall list. Similar entries: $($installedApps -join '; ')"
+  }
   $productCode = [string]$entry.PSChildName
   if ($productCode -notmatch '^\{[0-9A-Fa-f-]{36}\}$') {
     throw "The installed MSI product code is invalid: $productCode"
@@ -84,9 +93,10 @@ finally {
   }
   if ($productCode) {
     Write-Host 'Uninstalling HyesRead and checking cleanup.'
-    $uninstall = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/x', $productCode, '/qn', '/norestart') -Wait -PassThru
+    $uninstall = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/x', $productCode, '/qn', '/norestart', '/l*v', "`"$uninstallLog`"") -Wait -PassThru
     if ($uninstall.ExitCode -notin @(0, 3010)) {
-      throw "MSI uninstall failed with exit code $($uninstall.ExitCode)."
+      $details = if (Test-Path -LiteralPath $uninstallLog) { (Get-Content -LiteralPath $uninstallLog -Tail 80) -join "`n" } else { 'No MSI verbose log was created.' }
+      throw "MSI uninstall failed with exit code $($uninstall.ExitCode).`n$details"
     }
     if ($appPath -and (Test-Path -LiteralPath $appPath)) {
       throw "The installed executable remains after uninstall: $appPath"
