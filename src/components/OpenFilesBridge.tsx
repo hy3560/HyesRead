@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { listen } from "@tauri-apps/api/event";
 import { invoke, isDesktop, updateValue, writeValue } from "../lib/platform";
+import { mergeBookAddedAt, type BookAddedAt } from "../lib/bookOrder";
 
 interface ImportedBook {
   path: string;
@@ -31,6 +32,7 @@ export default function OpenFilesBridge() {
           const importedPaths = books.map(book => book.path);
           await updateValue<string[]>("hyes_master.json", "discrete_files", [], existingPaths => Array.from(new Set([...existingPaths, ...importedPaths])));
           await updateValue<string[]>("hyes_master.json", "excluded_files", [], existingPaths => existingPaths.filter(path => !importedPaths.includes(path)));
+          await updateValue<BookAddedAt>("hyes_master.json", "book_added_at", {}, existing => mergeBookAddedAt(existing, importedPaths));
 
           const book = books.find(candidate => candidate.path === uniquePaths[0]) ?? books[0];
           await invoke("prepare_book_read", { path: book.path });
