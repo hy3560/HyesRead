@@ -66,7 +66,8 @@ export default function HyesReadMaster() {
     try {
       const backup = await createBackup();
       downloadBackup(backup);
-      setBackupMessage("备份文件已生成。书籍原文件仍保存在原位置。 ");
+      const portableCount = backup.browserBooks?.length || 0;
+      setBackupMessage(`备份文件已生成，包含 ${portableCount} 本浏览器导入的书籍。`);
     } catch (error) {
       setOperationError(`生成备份失败：${String(error)}`);
     }
@@ -77,7 +78,7 @@ export default function HyesReadMaster() {
     setOperationError("");
     setBackupMessage("");
     try {
-      if (file.size > 50 * 1024 * 1024) throw new Error("备份文件超过 50 MB 限制");
+      if (file.size > 2 * 1024 * 1024 * 1024) throw new Error("备份文件超过 2 GB 限制");
       const backupText = await file.text();
       const backupDocument = JSON.parse(backupText) as { master?: { libraryPath?: string } };
       let selectedLibraryPath = "";
@@ -110,7 +111,8 @@ export default function HyesReadMaster() {
         }));
         setBooks(current => mergeBooks(current, restored.filter((book): book is Book => book !== null)));
       }
-      setBackupMessage(`备份已恢复，找到 ${restoredData.discoveredPaths.length} 本书；${restoredData.bookPathMappings.length} 本书的阅读数据已匹配到当前路径。书籍原文件未复制。`);
+      const portableCount = restoredData.restoredBrowserPaths.length;
+      setBackupMessage(`备份已恢复，找到 ${restoredData.discoveredPaths.length} 本本机书籍，恢复 ${portableCount} 本浏览器书籍；${restoredData.bookPathMappings.length} 本书的阅读数据已匹配到当前路径。`);
     } catch (error) {
       setOperationError(`恢复备份失败：${String(error)}`);
     } finally {
@@ -628,7 +630,7 @@ export default function HyesReadMaster() {
                 <div className="bg-white/[0.02] border border-white/5 p-8 rounded-[2rem] space-y-5">
                   <div>
                     <h2 className="text-lg font-serif text-white">备份与恢复</h2>
-                    <p className="mt-2 text-sm leading-6 text-zinc-400">备份包含书架索引、阅读位置、书签、标注、统计和目录来源。书籍原文件不包含在备份中；换设备后选择书籍文件夹，可按相对路径恢复匹配的阅读数据。备份文件含本机路径和目录地址，请妥善保存。</p>
+                    <p className="mt-2 text-sm leading-6 text-zinc-400">备份包含阅读数据和浏览器导入的书籍文件；本机书库中的书籍仍保存在原位置。换设备后选择书籍文件夹，可按相对路径恢复阅读数据。备份文件含本机路径和目录地址，请妥善保存。</p>
                   </div>
                   <div className="flex flex-wrap gap-3">
                     <button type="button" onClick={() => void exportDataBackup()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black hover:bg-orange-400"><Download size={16} />导出备份</button>
