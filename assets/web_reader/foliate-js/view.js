@@ -429,6 +429,8 @@ export class View extends HTMLElement {
         }
     }
     getCFI(index, range) {
+        const annotationValue = range && this.book.getAnnotationValue?.(index, range)
+        if (annotationValue) return annotationValue
         const baseCFI = this.book.sections[index].cfi ?? CFI.fake.fromIndex(index)
         if (!range) return baseCFI
         return CFI.joinIndir(baseCFI, CFI.fromRange(range))
@@ -446,6 +448,8 @@ export class View extends HTMLElement {
     resolveNavigation(target) {
         try {
             if (typeof target === 'number') return { index: target }
+            const custom = typeof target === 'string' && this.book.resolveCFI?.(target)
+            if (custom) return custom
             if (typeof target.fraction === 'number') {
                 const [index, anchor] = this.#sectionProgress.getSection(target.fraction)
                 return { index, anchor }

@@ -92,6 +92,23 @@ export class FixedLayout extends HTMLElement {
             iframe.addEventListener('load', () => {
                 const doc = iframe.contentDocument
                 this.dispatchEvent(new CustomEvent('load', { detail: { doc, index } }))
+                iframe.sectionIndex = index
+                const createOverlayer = () => {
+                    if (iframe.overlayer) return
+                    this.dispatchEvent(new CustomEvent('create-overlayer', {
+                        detail: {
+                            doc, index,
+                            attach: overlayer => {
+                                doc.body.style.position = 'relative'
+                                overlayer.element.style.zIndex = '5'
+                                doc.body.append(overlayer.element)
+                                iframe.overlayer = overlayer
+                            },
+                        },
+                    }))
+                }
+                if (onZoom) doc.addEventListener('hyesread:pdf-rendered', createOverlayer, { once: true })
+                else createOverlayer()
                 const { width, height } = getViewport(doc, this.defaultViewport)
                 resolve({
                     element, iframe,
@@ -308,7 +325,8 @@ export class FixedLayout extends HTMLElement {
     getContents() {
         return Array.from(this.#root.querySelectorAll('iframe'), frame => ({
             doc: frame.contentDocument,
-            // TODO: index, overlayer
+            index: frame.sectionIndex,
+            overlayer: frame.overlayer,
         }))
     }
     destroy() {
