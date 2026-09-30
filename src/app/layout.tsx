@@ -5,7 +5,10 @@ import OpenFilesBridge from "../components/OpenFilesBridge";
 export const metadata: Metadata = {
   title: "HyesRead",
   description: "在本机整理书架、阅读电子书并记录进度。",
-  icons: { icon: "/favicon.png", apple: "/favicon.png" },
+  icons: {
+    icon: `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/favicon.png`,
+    apple: `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/favicon.png`,
+  },
 };
 
 export default function RootLayout({
