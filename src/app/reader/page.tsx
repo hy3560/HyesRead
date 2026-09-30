@@ -8,6 +8,7 @@ import { getBrowserBook, isBrowserBook } from "../../lib/browserBooks";
 
 type ReaderLocation = { fraction: number; location?: number; href?: string; chapter?: string };
 type Bookmark = { id: string; label: string; location: ReaderLocation; createdAt: number };
+type TextSettings = { fontSize: number; spacing: number; theme: "light" | "sepia" | "dark" };
 
 export default function ReaderPage() {
   return <Suspense fallback={<main className="h-screen bg-[#050505]" />}><ReaderContent /></Suspense>;
@@ -19,6 +20,9 @@ function ReaderContent() {
   const [error, setError] = useState("");
   const [bookTitle, setBookTitle] = useState("");
   const [readerReady, setReaderReady] = useState(false);
+  const [textReady, setTextReady] = useState(false);
+  const [textSettingsOpen, setTextSettingsOpen] = useState(false);
+  const [textSettings, setTextSettings] = useState<TextSettings>({ fontSize: 18, spacing: 1.9, theme: "light" });
   const [currentLocation, setCurrentLocation] = useState<ReaderLocation | null>(null);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
@@ -27,6 +31,8 @@ function ReaderContent() {
   useEffect(() => {
     const path = bookPath;
     setReaderReady(false);
+    setTextReady(false);
+    setTextSettingsOpen(false);
     setBookmarksOpen(false);
     if (!path) {
       setError("缺少书籍路径");
@@ -99,14 +105,43 @@ function ReaderContent() {
             const textWindow = frame.contentWindow;
             if (!article || !textWindow) return;
             article.replaceChildren(document.createTextNode(text));
+            let restoredTextSettings: TextSettings = { fontSize: 18, spacing: 1.9, theme: "light" };
+            try {
+              const savedSettings = JSON.parse(localStorage.getItem("hyesread:reader-settings") || "{}");
+              const style = savedSettings.style || {};
+              restoredTextSettings = {
+                fontSize: Number.isFinite(Number(style.fontSize)) ? Math.min(32, Math.max(14, Number(style.fontSize))) : 18,
+                spacing: Number.isFinite(Number(style.spacing)) ? Math.min(2.2, Math.max(1.2, Number(style.spacing))) : 1.9,
+                theme: ["light", "sepia", "dark"].includes(style.theme) ? style.theme : "light",
+              };
+            } catch {
+              restoredTextSettings = { fontSize: 18, spacing: 1.9, theme: "light" };
+            }
+            setTextSettings(restoredTextSettings);
+            const textThemes = { light: ["#fff", "#27272a"], sepia: ["#f4ecd8", "#433b30"], dark: ["#181818", "#d8d2c8"] } as const;
+            const [background, color] = textThemes[restoredTextSettings.theme];
+            Object.assign(textWindow.document.body.style, {
+              background,
+              color,
+              fontSize: `${restoredTextSettings.fontSize}px`,
+              lineHeight: String(restoredTextSettings.spacing),
+            });
+            const scrollElement = textWindow.document.scrollingElement || textWindow.document.documentElement;
+            const maxScroll = () => Math.max(0, scrollElement.scrollHeight - textWindow.innerHeight);
+            const reportLocation = () => {
+              const fraction = maxScroll() ? scrollElement.scrollTop / maxScroll() : 0;
+              try { localStorage.setItem(key, JSON.stringify({ fraction })); } catch (e) { setError(`无法保存阅读位置：${e}`); }
+              setCurrentLocation({ fraction });
+            };
             const saved = localStorage.getItem(key);
-            if (saved) textWindow.scrollTo(0, Math.max(0, Number(JSON.parse(saved).fraction) || 0) * (textWindow.document.documentElement.scrollHeight - textWindow.innerHeight));
-            textWindow.addEventListener("scroll", () => {
-              const maxScroll = textWindow.document.documentElement.scrollHeight - textWindow.innerHeight;
-              localStorage.setItem(key, JSON.stringify({ fraction: maxScroll > 0 ? textWindow.scrollY / maxScroll : 0 }));
+            if (saved) textWindow.scrollTo(0, Math.max(0, Number(JSON.parse(saved).fraction) || 0) * maxScroll());
+            textWindow.document.addEventListener("scroll", () => {
+              reportLocation();
             }, { passive: true });
+            reportLocation();
+            setTextReady(true);
           }, { once: true });
-          frame.srcdoc = `<meta charset="utf-8"><style>body{max-width:46rem;margin:4rem auto;padding:0 2rem;color:#27272a;font:18px/1.9 system-ui;white-space:pre-wrap;overflow-wrap:anywhere}</style><article></article>`;
+          frame.srcdoc = `<meta charset="utf-8"><style>html,body{height:100%;margin:0}body{box-sizing:border-box;max-width:46rem;margin:0 auto;padding:3rem 2rem 5rem;color:#27272a;background:#fff;font:18px/1.9 system-ui;white-space:pre-wrap;overflow-wrap:anywhere;overflow-y:auto}article{min-height:100%}</style><article></article>`;
         } catch (e) { setError(`无法读取文本：${e}`); }
       };
       void loadText();
@@ -154,11 +189,37 @@ function ReaderContent() {
     };
   }, [bookPath]);
 
+  useEffect(() => {
+    if (!textReady) return;
+    const frame = document.getElementById("foliate-reader") as HTMLIFrameElement | null;
+    const body = frame?.contentDocument?.body;
+    if (!body) return;
+    const themes = {
+      light: ["#fff", "#27272a"],
+      sepia: ["#f4ecd8", "#433b30"],
+      dark: ["#181818", "#d8d2c8"],
+    } as const;
+    const [background, color] = themes[textSettings.theme];
+    body.style.background = background;
+    body.style.color = color;
+    body.style.fontSize = `${textSettings.fontSize}px`;
+    body.style.lineHeight = String(textSettings.spacing);
+    try {
+      const current = JSON.parse(localStorage.getItem("hyesread:reader-settings") || "{}");
+      localStorage.setItem("hyesread:reader-settings", JSON.stringify({
+        ...current,
+        style: { ...current.style, fontSize: textSettings.fontSize, spacing: textSettings.spacing, theme: textSettings.theme },
+      }));
+    } catch (e) {
+      setError(`无法保存阅读设置：${e}`);
+    }
+  }, [textReady, textSettings]);
+
   const addBookmark = () => {
     if (!bookPath || !currentLocation) return;
     const existing = bookmarks.find(mark => mark.location.href === currentLocation.href && Math.abs(mark.location.fraction - currentLocation.fraction) < 0.003);
     const next = existing ? bookmarks.filter(mark => mark.id !== existing.id) : [
-      { id: crypto.randomUUID(), label: currentLocation.chapter || `${Math.round(currentLocation.fraction * 100)}%`, location: currentLocation, createdAt: Date.now() },
+      { id: crypto.randomUUID(), label: currentLocation.chapter || `阅读位置 ${Math.round(currentLocation.fraction * 100)}%`, location: currentLocation, createdAt: Date.now() },
       ...bookmarks,
     ].slice(0, 500);
     try {
@@ -170,6 +231,15 @@ function ReaderContent() {
   };
 
   const goToBookmark = (bookmark: Bookmark) => {
+    if (textReady) {
+      const frame = document.getElementById("foliate-reader") as HTMLIFrameElement | null;
+      const textWindow = frame?.contentWindow;
+      const scrollElement = textWindow?.document.scrollingElement || textWindow?.document.documentElement;
+      const maxScroll = Math.max(0, (scrollElement?.scrollHeight ?? 0) - (textWindow?.innerHeight ?? 0));
+      textWindow?.scrollTo(0, bookmark.location.fraction * maxScroll);
+      setBookmarksOpen(false);
+      return;
+    }
     (document.getElementById("foliate-reader") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ type: "hyesread:restore", location: bookmark.location }, "*");
     setBookmarksOpen(false);
   };
@@ -180,10 +250,18 @@ function ReaderContent() {
         <button onClick={() => router.back()} className="rounded-lg px-3 py-2 hover:bg-white/10">← 返回书库</button>
         <span className="min-w-0 flex-1 text-sm text-zinc-400 truncate">{bookTitle || bookPath?.split(/[\\/]/).pop()}</span>
         {readerReady && <button type="button" aria-label="搜索正文" onClick={() => (document.getElementById("foliate-reader") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ type: "hyesread:toggle-search" }, "*")} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 max-[640px]:px-2">搜索</button>}
-        {readerReady && <button type="button" aria-label="阅读设置" onClick={() => (document.getElementById("foliate-reader") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ type: "hyesread:toggle-settings" }, "*")} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 max-[640px]:px-2">设置</button>}
-        {readerReady && <button type="button" aria-label="添加或移除当前书签" onClick={addBookmark} disabled={!currentLocation} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-40 max-[640px]:px-2">{bookmarks.some(mark => mark.location.href === currentLocation?.href && Math.abs(mark.location.fraction - (currentLocation?.fraction || 0)) < 0.003) ? "已标记" : "书签"}</button>}
-        {readerReady && <button type="button" aria-label="打开书签列表" onClick={() => setBookmarksOpen(value => !value)} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 max-[640px]:px-2">{bookmarks.length}</button>}
+        {(readerReady || textReady) && <button type="button" aria-label="阅读设置" onClick={() => {
+          if (textReady) setTextSettingsOpen(open => !open);
+          else (document.getElementById("foliate-reader") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ type: "hyesread:toggle-settings" }, "*");
+        }} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 max-[640px]:px-2">设置</button>}
+        {(readerReady || textReady) && <button type="button" aria-label="添加或移除当前书签" onClick={addBookmark} disabled={!currentLocation} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-40 max-[640px]:px-2">{bookmarks.some(mark => mark.location.href === currentLocation?.href && Math.abs(mark.location.fraction - (currentLocation?.fraction || 0)) < 0.003) ? "已标记" : "书签"}</button>}
+        {(readerReady || textReady) && <button type="button" aria-label="打开书签列表" onClick={() => setBookmarksOpen(value => !value)} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 max-[640px]:px-2">{bookmarks.length}</button>}
         {bookmarksOpen && <section aria-label="书签列表" className="absolute right-4 top-14 z-20 max-h-[65vh] w-80 overflow-auto rounded-xl border border-white/10 bg-[#141414] p-3 shadow-2xl max-[640px]:right-1 max-[640px]:w-[calc(100vw-8px)]">{bookmarks.length ? bookmarks.map(mark => <div key={mark.id} className="flex items-center gap-2 border-b border-white/5 py-1 last:border-0"><button type="button" onClick={() => goToBookmark(mark)} className="min-w-0 flex-1 truncate rounded-lg px-2 py-2 text-left text-sm text-zinc-200 hover:bg-white/10">{mark.label} · {Math.round(mark.location.fraction * 100)}%</button><button type="button" aria-label={`删除书签 ${mark.label}`} onClick={() => { const next = bookmarks.filter(item => item.id !== mark.id); try { localStorage.setItem(`hyes-bookmarks:${bookPath}`, JSON.stringify(next)); setBookmarks(next); } catch (e) { setError(`无法删除书签：${e}`); } }} className="px-2 py-2 text-zinc-500 hover:text-red-300">×</button></div>) : <div aria-hidden="true" className="h-10" />}</section>}
+        {textReady && textSettingsOpen && <section aria-label="阅读设置" className="absolute right-4 top-14 z-20 grid w-80 gap-4 rounded-xl border border-white/10 bg-[#141414] p-4 shadow-2xl max-[640px]:right-1 max-[640px]:w-[calc(100vw-8px)]">
+          <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">字号<input aria-label="字号" type="range" min="14" max="32" step="1" value={textSettings.fontSize} onChange={event => setTextSettings(settings => ({ ...settings, fontSize: Number(event.target.value) }))} /></label>
+          <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">行距<input aria-label="行距" type="range" min="1.2" max="2.2" step="0.1" value={textSettings.spacing} onChange={event => setTextSettings(settings => ({ ...settings, spacing: Number(event.target.value) }))} /></label>
+          <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">背景<select aria-label="背景" value={textSettings.theme} onChange={event => setTextSettings(settings => ({ ...settings, theme: event.target.value as TextSettings["theme"] }))} className="rounded-md bg-zinc-800 px-2 py-1"><option value="light">浅色</option><option value="sepia">护眼</option><option value="dark">深色</option></select></label>
+        </section>}
         {error && <span role="alert" className="text-red-400">{error}</span>}
       </header>
       <iframe id="foliate-reader" title="电子书阅读器" className="min-h-0 flex-1 border-0 bg-white" />

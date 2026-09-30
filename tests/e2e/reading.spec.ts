@@ -1,14 +1,20 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
-function createPdfFixture() {
-  const content = "BT\n/F1 18 Tf\n72 720 Td\n(HyesRead PDF acceptance) Tj\nET";
+function createPdfFixture(pageCount = 1) {
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
+    `<< /Type /Pages /Kids [${Array.from({ length: pageCount }, (_, index) => `${3 + index * 2} 0 R`).join(" ")}] /Count ${pageCount} >>`,
+    ...Array.from({ length: pageCount }, (_, index) => {
+      const pageId = 3 + index * 2;
+      const contentId = pageId + 1;
+      const content = `BT\n/F1 18 Tf\n72 720 Td\n(HyesRead PDF acceptance page ${index + 1}) Tj\nET`;
+      return [
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${3 + pageCount * 2} 0 R >> >> /Contents ${contentId} 0 R >>`,
+        `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
+      ];
+    }).flat(),
+    `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`,
   ];
   const parts = [Buffer.from("%PDF-1.4\n", "ascii")];
   const offsets = [0];
@@ -23,6 +29,51 @@ function createPdfFixture() {
   const xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
   parts.push(Buffer.from(xref, "ascii"));
   return Buffer.concat(parts);
+}
+
+function createZipFixture(files: { name: string; data: Buffer }[]) {
+  const crc32 = (data: Buffer) => {
+    let crc = 0xffffffff;
+    for (const byte of data) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+  const local: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const file of files) {
+    const name = Buffer.from(file.name, "utf8");
+    const checksum = crc32(file.data);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt32LE(checksum, 14);
+    header.writeUInt32LE(file.data.length, 18);
+    header.writeUInt32LE(file.data.length, 22);
+    header.writeUInt16LE(name.length, 26);
+    local.push(header, name, file.data);
+    const record = Buffer.alloc(46);
+    record.writeUInt32LE(0x02014b50, 0);
+    record.writeUInt16LE(20, 4);
+    record.writeUInt16LE(20, 6);
+    record.writeUInt32LE(checksum, 16);
+    record.writeUInt32LE(file.data.length, 20);
+    record.writeUInt32LE(file.data.length, 24);
+    record.writeUInt16LE(name.length, 28);
+    record.writeUInt32LE(offset, 42);
+    central.push(record, name);
+    offset += header.length + name.length + file.data.length;
+  }
+  const centralSize = central.reduce((size, part) => size + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, ...central, end]);
 }
 
 test("keeps the empty shelf free of instructional copy", async ({ page }) => {
@@ -224,6 +275,107 @@ test("keeps uploaded text on the shelf after reload and reads Chinese text", asy
   await expect(textFrame.locator("article")).toContainText("中文内容能够正确显示。");
   await expect(textFrame.locator("article")).toContainText("本机阅读与进度恢复。");
   expect(runtimeErrors).toEqual([]);
+});
+
+test("supports text-book progress and bookmarks across reloads", async ({ page }) => {
+  const text = Array.from({ length: 180 }, (_, index) => `第${index + 1}段：用于验证纯文本长文阅读位置和书签恢复。`).join("\n\n");
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles({ name: "长文进度验收.txt", mimeType: "text/plain", buffer: Buffer.from(text, "utf8") });
+  await page.getByRole("button", { name: "打开《长文进度验收》" }).click();
+
+  const frame = page.frameLocator("#foliate-reader");
+  await expect(frame.locator("article")).toContainText("第180段");
+  await expect(page.getByRole("button", { name: "添加或移除当前书签" })).toBeEnabled();
+  await page.getByRole("button", { name: "阅读设置" }).click();
+  await expect(page.getByRole("region", { name: "阅读设置" })).toBeVisible();
+  await page.getByLabel("字号").fill("24");
+  await page.getByLabel("背景").selectOption("sepia");
+  await expect(frame.locator("body")).toHaveCSS("background-color", "rgb(244, 236, 216)");
+  await page.getByRole("button", { name: "阅读设置" }).click();
+  await frame.locator("html").evaluate(element => element.scrollTo(0, element.scrollHeight));
+  await expect.poll(() => page.evaluate(() => {
+    const entry = Object.entries(localStorage).find(([key]) => key.startsWith("hyes-reader-location:"));
+    return entry ? JSON.parse(entry[1]).fraction : 0;
+  })).toBeGreaterThan(0.5);
+  await page.getByRole("button", { name: "添加或移除当前书签" }).click();
+  await expect(page.getByRole("button", { name: "添加或移除当前书签" })).toHaveText("已标记");
+
+  await page.reload();
+  await expect(frame.locator("article")).toContainText("第180段");
+  await page.getByRole("button", { name: "阅读设置" }).click();
+  await expect(page.getByLabel("字号")).toHaveValue("24");
+  await expect(page.getByLabel("背景")).toHaveValue("sepia");
+  await page.getByRole("button", { name: "阅读设置" }).click();
+  await expect.poll(() => frame.locator("html").evaluate(element => element.scrollTop / Math.max(1, element.scrollHeight - element.clientHeight))).toBeGreaterThan(0.5);
+  await expect(page.getByRole("button", { name: "添加或移除当前书签" })).toHaveText("已标记");
+  await frame.locator("html").evaluate(element => element.scrollTo(0, 0));
+  await page.getByRole("button", { name: "打开书签列表" }).click();
+  await page.getByRole("region", { name: "书签列表" }).locator("button:not([aria-label])").click();
+  await expect.poll(() => frame.locator("html").evaluate(element => element.scrollTop / Math.max(1, element.scrollHeight - element.clientHeight))).toBeGreaterThan(0.5);
+});
+
+test("opens a multi-page PDF and restores the selected page", async ({ page }) => {
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles({ name: "两页PDF验收.pdf", mimeType: "application/pdf", buffer: createPdfFixture(2) });
+  await page.getByRole("button", { name: "打开《两页PDF验收》" }).click();
+
+  const reader = page.frameLocator("#foliate-reader");
+  await expect(reader.locator("foliate-view")).toBeVisible();
+  await expect.poll(() => reader.locator("body").evaluate(() => {
+    const host = window as unknown as { reader?: { view?: { book?: { sections?: unknown[] } } } };
+    return host.reader?.view?.book?.sections?.length;
+  })).toBe(2);
+  await reader.locator("foliate-view").evaluate(element => {
+    const view = element as HTMLElement & { goTo: (index: number) => Promise<void> };
+    return view.goTo(1);
+  });
+  await expect.poll(() => page.evaluate(() => {
+    const entry = Object.entries(localStorage).find(([key]) => key.startsWith("hyes-reader-location:"));
+    return entry ? JSON.parse(entry[1]).fraction : 0;
+  })).toBeGreaterThan(0.5);
+  await page.getByRole("button", { name: "阅读设置" }).click();
+  await expect(reader.getByRole("region", { name: "阅读设置" })).toBeVisible();
+  await reader.locator("#reading-theme").selectOption("sepia");
+  await page.getByRole("button", { name: "添加或移除当前书签" }).click();
+  await page.reload();
+  await expect(reader.locator("foliate-view")).toBeVisible();
+  await expect(reader.locator("#reading-theme")).toHaveValue("sepia");
+  await expect(page.getByRole("button", { name: "添加或移除当前书签" })).toHaveText("已标记");
+});
+
+test("opens a multi-page CBZ and moves between comic pages", async ({ page }) => {
+  const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p4sAAAAASUVORK5CYII=", "base64");
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles({ name: "两页漫画验收.cbz", mimeType: "application/vnd.comicbook+zip", buffer: createZipFixture([{ name: "001.png", data: pixel }, { name: "002.png", data: pixel }]) });
+  await page.getByRole("button", { name: "打开《两页漫画验收》" }).click();
+
+  const reader = page.frameLocator("#foliate-reader");
+  await expect(reader.locator("foliate-view")).toBeVisible();
+  await expect.poll(() => reader.locator("body").evaluate(() => {
+    const host = window as unknown as { reader?: { view?: { book?: { sections?: unknown[] } } } };
+    return host.reader?.view?.book?.sections?.length;
+  })).toBe(2);
+  await reader.locator("foliate-view").evaluate(element => {
+    const view = element as HTMLElement & { goTo: (index: number) => Promise<void> };
+    return view.goTo(1);
+  });
+  await expect.poll(() => page.evaluate(() => {
+    const entry = Object.entries(localStorage).find(([key]) => key.startsWith("hyes-reader-location:"));
+    return entry ? JSON.parse(entry[1]).fraction : 0;
+  })).toBeGreaterThan(0.5);
+  await page.getByRole("button", { name: "添加或移除当前书签" }).click();
+  await page.reload();
+  await expect(reader.locator("foliate-view")).toBeVisible();
+  await expect(page.getByRole("button", { name: "添加或移除当前书签" })).toHaveText("已标记");
 });
 
 test("removes a browser book only after its shelf entry is saved", async ({ page }) => {
