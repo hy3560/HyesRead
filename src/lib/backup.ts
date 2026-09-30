@@ -34,6 +34,17 @@ const timestamps = (value: unknown): BookAddedAt => isObject(value)
   ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[0] === "string" && Number.isFinite(entry[1]) && Number(entry[1]) >= 0))
   : {};
 
+function catalogForBackup(source: CatalogSource): CatalogSource {
+  try {
+    const url = new URL(source.url);
+    url.username = "";
+    url.password = "";
+    return { ...source, url: url.toString() };
+  } catch {
+    return source;
+  }
+}
+
 export async function createBackup(): Promise<PortableBackupFile> {
   const [libraryPath, discreteFiles, excludedFiles, lastOpenedBook, bookAddedAt, sessions, catalogs] = await Promise.all([
     readValue("hyes_master.json", "library_path", ""),
@@ -60,7 +71,7 @@ export async function createBackup(): Promise<PortableBackupFile> {
     exportedAt: new Date().toISOString(),
     master: { libraryPath, discreteFiles, excludedFiles, lastOpenedBook, bookAddedAt },
     sessions,
-    catalogs,
+    catalogs: catalogs.map(catalogForBackup),
     readerData,
   };
   const files = await listBrowserBooks(discreteFiles);

@@ -61,6 +61,20 @@ function linkExtension(link: CatalogLink) {
   return mediaTypes[link.media_type.toLowerCase()] || "epub";
 }
 
+function acquisitionUrl(linkUrl: string, sourceUrl: string) {
+  try {
+    const source = new URL(sourceUrl);
+    const target = new URL(linkUrl);
+    if (source.origin === target.origin && (source.username || source.password)) {
+      target.username = decodeURIComponent(source.username);
+      target.password = decodeURIComponent(source.password);
+    }
+    return target.toString();
+  } catch {
+    return linkUrl;
+  }
+}
+
 export default function OpdsCatalog({ onImported }: { onImported: (path: string) => Promise<boolean> }) {
   const [sources, setSources] = useState<CatalogSource[]>([]);
   const [sourceUrl, setSourceUrl] = useState("");
@@ -103,7 +117,7 @@ export default function OpdsCatalog({ onImported }: { onImported: (path: string)
     const url = sourceUrl.trim();
     try {
       const parsed = new URL(url);
-      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("地址无效");
+      if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) throw new Error("地址无效");
     } catch {
       setError("请输入有效的 HTTP 或 HTTPS 目录地址。");
       return;
@@ -205,7 +219,7 @@ export default function OpdsCatalog({ onImported }: { onImported: (path: string)
       });
       if (!destination) return;
       setDownloading(link.href);
-      const path = await invoke<string>("download_opds_book", { url: link.href, destination });
+      const path = await invoke<string>("download_opds_book", { url: acquisitionUrl(link.href, activeUrl), destination });
       if (!await onImported(path)) setError("电子书已保存，但没有加入书架。");
     } catch (reason) {
       setError(`下载失败：${String(reason)}`);

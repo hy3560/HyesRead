@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { mapBookPaths } from "../../src/lib/bookPaths";
 import { remapBackupPaths } from "../../src/lib/backupPaths";
+import { isMobileUserAgent } from "../../src/lib/platform";
 
 function createPdfFixture(pageCount = 1) {
   const objects = [
@@ -92,6 +93,12 @@ test("maps restored library books by relative path and leaves ambiguous matches 
   ]);
 });
 
+test("identifies phone runtimes separately from desktop Tauri", async () => {
+  expect(isMobileUserAgent("Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 Chrome/133 Mobile Safari/537.36")).toBe(true);
+  expect(isMobileUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15")).toBe(true);
+  expect(isMobileUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/133 Safari/537.36")).toBe(false);
+});
+
 test("remaps every per-book backup record when a library moves", async () => {
   const source = "C:\\OldLibrary\\Novel.epub";
   const target = "D:\\Books\\Novel.epub";
@@ -125,6 +132,7 @@ test("exports a backup and merges imported reading data without replacing curren
   await page.addInitScript(() => {
     localStorage.setItem("hyes:hyes_master.json", JSON.stringify({ discrete_files: ["browser-book:existing"] }));
     localStorage.setItem("hyes:hyes_stats.json", JSON.stringify({ sessions: [{ date: "2026-09-30", duration: 20, bookPath: "book.epub" }] }));
+    localStorage.setItem("hyes:hyes_catalogs.json", JSON.stringify({ sources: [{ name: "私人书库", url: "https://reader:secret@example.com/opds" }] }));
     localStorage.setItem("hyes-bookmarks:book.epub", JSON.stringify([{ id: "existing-bookmark", label: "现有书签", location: { fraction: 0.2 }, createdAt: 1 }]));
     localStorage.setItem("hyes-reader-location:book.epub", JSON.stringify({ fraction: 0.25 }));
   });
@@ -142,6 +150,7 @@ test("exports a backup and merges imported reading data without replacing curren
   expect(exported.format).toBe("hyesread-backup");
   expect(exported.master.discreteFiles).toEqual(["browser-book:existing"]);
   expect(exported.readerData["hyes-reader-location:book.epub"]).toBe(JSON.stringify({ fraction: 0.25 }));
+  expect(exported.catalogs).toEqual([{ name: "私人书库", url: "https://example.com/opds" }]);
 
   const importedBackup = {
     format: "hyesread-backup",

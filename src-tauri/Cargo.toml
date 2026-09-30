@@ -1,6 +1,6 @@
 [package]
 name = "hyes-read"
-version = "0.1.23"
+version = "0.1.24"
 edition = "2021"
 
 [lib]
@@ -19,6 +19,7 @@ opener = { version = "0.7.1", features = ["reveal"] }
 reqwest = { version = "0.13.3", features = ["stream", "rustls"] }
 quick-xml = "0.39.3"
 url = "2.5.8"
+percent-encoding = "2.3"
 tokio = { version = "1.52.2", features = ["fs", "io-util"] }
 
 epub = "2.1"

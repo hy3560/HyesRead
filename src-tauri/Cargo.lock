@@ -1738,13 +1738,14 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "hyes-read"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "base64 0.22.1",
  "epub",
  "lopdf",
  "mobi",
  "opener",
+ "percent-encoding",
  "quick-xml",
  "rayon",
  "reqwest",

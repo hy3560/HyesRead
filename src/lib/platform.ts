@@ -57,4 +57,11 @@ export async function invoke<T>(command: string, args: Record<string, unknown> =
   return tauriInvoke<T>(command, args);
 }
 
-export function isDesktop() { return isTauri(); }
+export function isMobileUserAgent(userAgent: string) {
+  return /Android|iPhone|iPad|iPod/i.test(userAgent);
+}
+
+export function isDesktop() {
+  const userAgent = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  return isTauri() && !isMobileUserAgent(userAgent);
+}
