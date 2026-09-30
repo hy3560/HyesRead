@@ -72,7 +72,7 @@ jobs:
         if: always()
         run: rm -f src-tauri/gen/android/keystore.properties "$RUNNER_TEMP/hyesread-android-signing/release.jks"
       - name: Publish Android APK to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body: |
             Android ARM64 phone APK and Windows x64 installer for HyesRead ${{ github.ref_name }}.
@@ -81,6 +81,7 @@ jobs:
             Windows: download the MSI, install it, and open HyesRead from the Start menu.
           files: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
           overwrite_files: true
+          fail_on_unmatched_files: true
 
   windows:
     runs-on: windows-latest
@@ -105,7 +106,7 @@ jobs:
           if (-not $msi) { throw 'The Windows MSI was not produced.' }
           ./scripts/test-installer.ps1 -MsiPath $msi.FullName
       - name: Publish release with installer
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body: |
             Windows x64 installer for HyesRead ${{ github.ref_name }}.
@@ -113,3 +114,4 @@ jobs:
             Download the MSI below, install it, and open HyesRead from the Start menu.
           files: src-tauri/target/release/bundle/msi/*.msi
           overwrite_files: true
+          fail_on_unmatched_files: true
