@@ -25,6 +25,8 @@ Download the Android ARM64 APK from [GitHub Releases](https://github.com/hy3560/
 
 ## Run in a browser
 
+Open the [HyesRead mobile web app](https://hy3560.github.io/HyesRead/) in a phone browser. Bookshelves and reading data stay in that browser. Use **Add files** to choose books; browser security does not allow scanning phone folders. OPDS catalogs are not available in the web app.
+
 Install Node.js and pnpm, then run:
 
 ```bash

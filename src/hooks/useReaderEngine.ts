@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 
-const READER_URL = "/assets/web_reader/foliate-js/reader.html";
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const READER_URL = `${BASE_PATH}/assets/web_reader/foliate-js/reader.html`;
 
 /** Creates a local reader URL for Foliate's bundled, offline-capable reading engine. */
 export function useReaderEngine(filePath: string) {

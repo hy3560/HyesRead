@@ -579,13 +579,15 @@ try {
     ],
   };
   await shelfPage.getByRole("button", { name: "设置" }).click();
+  const backupChooserPromise = shelfPage.waitForEvent("filechooser");
   await shelfPage.getByRole("button", { name: "导入并合并" }).click();
+  const backupChooser = await backupChooserPromise;
   const backupFileInput = shelfPage.locator('input[aria-label="选择 HyesRead 备份文件"]');
   await backupFileInput.evaluate(input => {
     input.dataset.nativeAcceptanceChangeSeen = "false";
     input.addEventListener("change", () => { input.dataset.nativeAcceptanceChangeSeen = "true"; }, { once: true });
   });
-  await backupFileInput.setInputFiles({
+  await backupChooser.setFiles({
     name: "hyesread-native-portable-backup.json",
     mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify(portableBackup)),
