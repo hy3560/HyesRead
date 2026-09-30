@@ -2,10 +2,11 @@ import { invoke, readValue, updateValue, writeValue } from "./platform";
 import type { BookAddedAt } from "./bookOrder";
 import { mapBookPaths } from "./bookPaths";
 import { remapBackupPaths } from "./backupPaths";
+import { isBrowserBook, listBrowserBooks, saveBrowserBook } from "./browserBooks";
 
 const FORMAT = "hyesread-backup";
 const VERSION = 1;
-const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
+const MAX_BACKUP_BYTES = 2 * 1024 * 1024 * 1024;
 const READER_KEY_PREFIXES = ["hyes-reader-location:", "hyes-bookmarks:", "hyes-highlights:", "hyesread:"];
 
 type ReadingSession = { date: string; duration: number; bookPath: string };
@@ -18,9 +19,12 @@ type BackupFile = {
   sessions: ReadingSession[];
   catalogs: CatalogSource[];
   readerData: Record<string, string>;
+  browserBooks?: { id: string; name: string; type: string; data: string }[];
 };
 
-export type BackupRestoreResult = { bookPathMappings: [string, string][]; discoveredPaths: string[] };
+type PortableBackupFile = BackupFile & { browserBooks?: { id: string; name: string; type: string; data: string }[] };
+
+export type BackupRestoreResult = { bookPathMappings: [string, string][]; discoveredPaths: string[]; restoredBrowserPaths: string[] };
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -28,7 +32,7 @@ const timestamps = (value: unknown): BookAddedAt => isObject(value)
   ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[0] === "string" && Number.isFinite(entry[1]) && Number(entry[1]) >= 0))
   : {};
 
-export async function createBackup(): Promise<BackupFile> {
+export async function createBackup(): Promise<PortableBackupFile> {
   const [libraryPath, discreteFiles, excludedFiles, lastOpenedBook, bookAddedAt, sessions, catalogs] = await Promise.all([
     readValue("hyes_master.json", "library_path", ""),
     readValue<string[]>("hyes_master.json", "discrete_files", []),
@@ -48,7 +52,7 @@ export async function createBackup(): Promise<BackupFile> {
     }
   }
 
-  return {
+  const backup: PortableBackupFile = {
     format: FORMAT,
     version: VERSION,
     exportedAt: new Date().toISOString(),
@@ -57,6 +61,30 @@ export async function createBackup(): Promise<BackupFile> {
     catalogs,
     readerData,
   };
+  const files = await listBrowserBooks(discreteFiles);
+  backup.browserBooks = await Promise.all(files.map(async ({ id, file }) => ({
+    id,
+    name: file.name,
+    type: file.type,
+    data: await blobToBase64(file),
+  })));
+  return backup;
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] || "");
+    reader.onerror = () => reject(reader.error || new Error("读取书籍文件失败"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 function parseBackup(value: unknown): BackupFile {
@@ -78,6 +106,25 @@ function parseBackup(value: unknown): BackupFile {
     try { JSON.parse(data); } catch { throw new Error(`备份中的阅读数据无效：${key}`); }
     readerData[key] = data;
   }
+  const browserBooks = value.browserBooks === undefined ? [] : value.browserBooks;
+  if (!Array.isArray(browserBooks) || !browserBooks.every(item => isObject(item)
+    && typeof item.id === "string" && isBrowserBook(item.id)
+    && typeof item.name === "string" && typeof item.type === "string" && typeof item.data === "string")) {
+    throw new Error("备份中的书籍文件格式无效");
+  }
+  const ids = new Set<string>();
+  for (const item of browserBooks) {
+    if (ids.has(item.id as string)) throw new Error("备份中包含重复的书籍文件");
+    if (!strings(value.master.discreteFiles).includes(item.id as string)) throw new Error("备份中的书籍文件没有对应的书架记录");
+    try {
+      const bytes = base64ToBytes(item.data as string);
+      if (bytes.byteLength > MAX_BACKUP_BYTES) throw new Error("备份文件超过 2 GB 限制");
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("2 GB")) throw error;
+      throw new Error("备份中的书籍文件已损坏");
+    }
+    ids.add(item.id as string);
+  }
   return {
     format: FORMAT,
     version: VERSION,
@@ -92,6 +139,7 @@ function parseBackup(value: unknown): BackupFile {
     sessions: value.sessions as ReadingSession[],
     catalogs: value.catalogs as CatalogSource[],
     readerData,
+    browserBooks: browserBooks as PortableBackupFile["browserBooks"],
   };
 }
 
@@ -175,10 +223,12 @@ function mapLibraryPaths(backup: BackupFile, libraryPath: string, discoveredPath
 }
 
 export async function restoreBackup(text: string, selectedLibraryPath = ""): Promise<BackupRestoreResult> {
-  if (new TextEncoder().encode(text).byteLength > MAX_IMPORT_BYTES) throw new Error("备份文件超过 50 MB 限制");
+  if (new TextEncoder().encode(text).byteLength > MAX_BACKUP_BYTES) throw new Error("备份文件超过 2 GB 限制");
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { throw new Error("无法解析备份文件"); }
   const backup = parseBackup(parsed);
+  const totalBookBytes = (backup.browserBooks || []).reduce((total, book) => total + Math.floor(book.data.length * 3 / 4), 0);
+  if (new TextEncoder().encode(text).byteLength + totalBookBytes > MAX_BACKUP_BYTES) throw new Error("备份文件超过 2 GB 限制");
 
   const currentLibraryPath = selectedLibraryPath || await readValue("hyes_master.json", "library_path", "");
   let discoveredPaths: string[] = [];
@@ -193,11 +243,20 @@ export async function restoreBackup(text: string, selectedLibraryPath = ""): Pro
   const bookPathMappings = mapLibraryPaths(backup, currentLibraryPath, discoveredPaths);
   const remappedBackup = remapBackupPaths(backup, bookPathMappings);
 
+  const restoredBrowserPaths: string[] = [];
+  for (const book of backup.browserBooks || []) {
+    const bytes = base64ToBytes(book.data);
+    const blob = new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer], { type: book.type });
+    const file = new File([blob], book.name, { type: book.type });
+    await saveBrowserBook(book.id, file);
+    restoredBrowserPaths.push(book.id);
+  }
+
   const [existingDiscrete, existingExcluded] = await Promise.all([
     readValue<string[]>("hyes_master.json", "discrete_files", []),
     readValue<string[]>("hyes_master.json", "excluded_files", []),
   ]);
-  const remappedDiscrete = remappedBackup.master.discreteFiles;
+  const remappedDiscrete = [...remappedBackup.master.discreteFiles, ...restoredBrowserPaths];
   const mergedDiscrete = Array.from(new Set([...existingDiscrete, ...remappedDiscrete]));
   const remappedExcluded = remappedBackup.master.excludedFiles;
   const mergedExcluded = Array.from(new Set([...existingExcluded, ...remappedExcluded])).filter(path => !mergedDiscrete.includes(path));
@@ -213,7 +272,7 @@ export async function restoreBackup(text: string, selectedLibraryPath = ""): Pro
   if (!currentLastOpened && remappedBackup.master.lastOpenedBook) await writeValue("hyes_master.json", "last_opened_book", remappedBackup.master.lastOpenedBook);
   for (const [key, value] of Object.entries(remappedBackup.readerData)) mergeLocalValue(key, value);
   const visibleDiscoveredPaths = discoveredPaths.filter(path => !mergedExcluded.includes(path));
-  return { bookPathMappings, discoveredPaths: visibleDiscoveredPaths };
+  return { bookPathMappings, discoveredPaths: visibleDiscoveredPaths, restoredBrowserPaths };
 }
 
 export function downloadBackup(backup: BackupFile) {

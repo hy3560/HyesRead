@@ -178,6 +178,47 @@ test("exports a backup and merges imported reading data without replacing curren
   expect(result.location.fraction).toBe(0.25);
 });
 
+test("portable browser-book backups restore the actual book after local storage is cleared", async ({ page }) => {
+  await page.goto("/");
+  const fixture = resolve("tests/fixtures/hyesread-acceptance.epub");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  await (await chooserPromise).setFiles(fixture);
+  await expect(page.getByRole("button", { name: "打开《hyesread-acceptance》" })).toBeVisible();
+
+  await page.getByRole("button", { name: "设置" }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出备份" }).click();
+  const download = await downloadPromise;
+  const downloadPath = await download.path();
+  expect(downloadPath).not.toBeNull();
+  const backup = JSON.parse(await readFile(downloadPath!, "utf8"));
+  expect(backup.browserBooks).toHaveLength(1);
+  expect(backup.browserBooks[0].name).toBe("hyesread-acceptance.epub");
+
+  await page.evaluate(async () => {
+    localStorage.clear();
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase("hyesread-browser-books");
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: "导入并合并" }).click();
+  await page.locator('input[aria-label="选择 HyesRead 备份文件"]').setInputFiles({
+    name: download.suggestedFilename(),
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
+  await expect(page.getByRole("status")).toContainText("恢复 1 本浏览器书籍");
+  await page.getByRole("button", { name: "书架" }).click();
+  await expect(page.getByRole("button", { name: "打开《hyesread-acceptance》" })).toBeVisible();
+  await page.getByRole("button", { name: "打开《hyesread-acceptance》" }).click();
+  await expect(page.frameLocator("#foliate-reader").locator("foliate-view")).toBeVisible();
+});
+
 test("sorts browser imports by added time and keeps the order after reload", async ({ page }) => {
   await page.goto("/");
   for (const name of ["recent-order-older", "recent-order-newer"]) {
