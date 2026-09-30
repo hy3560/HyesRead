@@ -1,6 +1,5 @@
 import './view.js'
 import { createTOCView } from './ui/tree.js'
-import { createMenu } from './ui/menu.js'
 import { Overlayer } from './overlayer.js'
 
 const getCSS = ({ spacing, justify, hyphenate }) => `
@@ -68,45 +67,72 @@ class Reader {
         spacing: 1.4,
         justify: true,
         hyphenate: true,
+        fontSize: 18,
+        theme: 'light',
     }
+    flow = 'paginated'
     annotations = new Map()
     annotationsByValue = new Map()
+    searchRequestId = 0
     closeSideBar() {
         $('#dimming-overlay').classList.remove('show')
         $('#side-bar').classList.remove('show')
     }
     constructor() {
+        try {
+            const saved = JSON.parse(localStorage.getItem('hyesread:reader-settings') || '{}')
+            const fontSize = Number(saved.style?.fontSize)
+            const spacing = Number(saved.style?.spacing)
+            this.style = {
+                ...this.style,
+                ...(Number.isFinite(fontSize) ? { fontSize: Math.min(32, Math.max(14, fontSize)) } : {}),
+                ...(Number.isFinite(spacing) ? { spacing: Math.min(2.2, Math.max(1.2, spacing)) } : {}),
+                ...(['light', 'sepia', 'dark'].includes(saved.style?.theme) ? { theme: saved.style.theme } : {}),
+            }
+            this.flow = saved.flow === 'scrolled' ? 'scrolled' : 'paginated'
+        } catch {}
+        $('#font-size').value = this.style.fontSize
+        $('#line-spacing').value = this.style.spacing
+        $('#reading-flow').value = this.flow
+        $('#reading-theme').value = this.style.theme
         $('#side-bar-button').addEventListener('click', () => {
             $('#dimming-overlay').classList.add('show')
             $('#side-bar').classList.add('show')
         })
         $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
 
-        const menu = createMenu([
-            {
-                name: 'layout',
-                label: 'Layout',
-                type: 'radio',
-                items: [
-                    ['Paginated', 'paginated'],
-                    ['Scrolled', 'scrolled'],
-                ],
-                onclick: value => {
-                    this.view?.renderer.setAttribute('flow', value)
-                },
-            },
-        ])
-        menu.element.classList.add('menu')
-
-        $('#menu-button').append(menu.element)
         $('#menu-button > button').addEventListener('click', () =>
-            menu.element.classList.toggle('show'))
-        menu.groups.layout.select('paginated')
+            $('#reader-settings').classList.toggle('show'))
+        $('#font-size').addEventListener('input', event => {
+            this.style.fontSize = Number(event.target.value)
+            this.applyStyles()
+            this.saveSettings()
+        })
+        $('#line-spacing').addEventListener('input', event => {
+            this.style.spacing = Number(event.target.value)
+            this.applyStyles()
+            this.saveSettings()
+        })
+        $('#reading-flow').addEventListener('change', event => {
+            this.flow = event.target.value
+            this.view?.renderer.setAttribute('flow', this.flow)
+            this.saveSettings()
+        })
+        $('#reading-theme').addEventListener('change', event => {
+            this.style.theme = event.target.value
+            this.applyStyles()
+            this.saveSettings()
+        })
+        $('#search-form').addEventListener('submit', event => {
+            event.preventDefault()
+            void this.search($('#search-query').value.trim())
+        })
     }
     async open(file) {
         this.view = document.createElement('foliate-view')
         document.body.append(this.view)
         await this.view.open(file)
+        this.view.renderer.setAttribute('flow', this.flow)
         this.view.addEventListener('load', this.#onLoad.bind(this))
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
 
@@ -117,7 +143,7 @@ class Reader {
                 return ''
             })
         })
-        this.view.renderer.setStyles?.(getCSS(this.style))
+        this.applyStyles()
         this.view.renderer.next()
 
         $('#header-bar').style.visibility = 'visible'
@@ -186,6 +212,70 @@ class Reader {
             })
         }
     }
+    applyStyles() {
+        const themes = {
+            light: ['#fff', '#202124'],
+            sepia: ['#f4ecd8', '#433b30'],
+            dark: ['#181818', '#d8d2c8'],
+        }
+        const [background, color] = themes[this.style.theme] || themes.light
+        this.view?.renderer.setStyles?.(`${getCSS(this.style)}\nhtml { background: ${background}; color: ${color}; } body { font-size: ${this.style.fontSize}px !important; }`)
+        document.body.style.background = background
+        document.body.style.color = color
+    }
+    saveSettings() {
+        try {
+            localStorage.setItem('hyesread:reader-settings', JSON.stringify({ style: this.style, flow: this.flow }))
+        } catch (error) {
+            console.error('无法保存阅读设置', error)
+        }
+    }
+    async search(query) {
+        const requestId = ++this.searchRequestId
+        const status = $('#search-status')
+        const results = $('#search-results')
+        results.replaceChildren()
+        if (!query) {
+            status.textContent = ''
+            return
+        }
+        status.textContent = '正在搜索'
+        const matches = []
+        try {
+            this.view.clearSearch()
+            for await (const item of this.view.search({ query, matchCase: false })) {
+                if (requestId !== this.searchRequestId) break
+                if (typeof item.progress === 'number') {
+                    status.textContent = `正在搜索 ${Math.round(item.progress * 100)}%`
+                    await new Promise(requestAnimationFrame)
+                    continue
+                }
+                if (item === 'done') continue
+                if (item.subitems) matches.push(...item.subitems)
+                else if (item.cfi) matches.push(item)
+                if (matches.length >= 500) {
+                    matches.length = 500
+                    break
+                }
+            }
+            if (requestId !== this.searchRequestId) return
+            for (const item of matches) {
+                const button = document.createElement('button')
+                button.type = 'button'
+                button.className = 'search-result'
+                const excerpt = item.excerpt || {}
+                button.append(document.createTextNode(excerpt.pre || ''))
+                const mark = document.createElement('mark')
+                mark.textContent = excerpt.match || query
+                button.append(mark, document.createTextNode(excerpt.post || ''))
+                button.addEventListener('click', () => this.view.goTo(item.cfi))
+                results.append(button)
+            }
+            status.textContent = matches.length === 500 ? '显示前 500 处' : `${matches.length} 处`
+        } catch (error) {
+            status.textContent = error?.message || String(error)
+        }
+    }
     #handleKeydown(event) {
         const k = event.key
         if (k === 'ArrowLeft' || k === 'h') this.view.goLeft()
@@ -231,7 +321,7 @@ const open = async file => {
     try { await reader.open(file) } catch (error) { showError(error); return }
     reader.view.addEventListener('relocate', ({ detail }) => parent.postMessage({
         type: 'hyesread:relocate',
-        location: { fraction: detail.fraction, location: detail.location?.current, href: detail.tocItem?.href },
+        location: { fraction: detail.fraction, location: detail.location?.current, href: detail.tocItem?.href, chapter: detail.tocItem?.label },
     }, '*'))
     parent.postMessage({ type: 'hyesread:ready' }, '*')
 }
@@ -262,6 +352,16 @@ addEventListener('message', event => {
         open(event.data.file).catch(showError)
     if (event.data.type === 'hyesread:restore' && event.data.location?.fraction != null)
         globalThis.reader?.view?.goToFraction(event.data.location.fraction).catch(console.error)
+    if (event.data.type === 'hyesread:toggle-settings') {
+        $('#reader-search').classList.remove('show')
+        $('#reader-settings').classList.toggle('show')
+    }
+    if (event.data.type === 'hyesread:toggle-search') {
+        const panel = $('#reader-search')
+        $('#reader-settings').classList.remove('show')
+        panel.classList.toggle('show')
+        if (panel.classList.contains('show')) $('#search-query').focus()
+    }
 })
 if (url) open(url).catch(e => console.error(e))
 else dropTarget.style.visibility = 'visible'
