@@ -43,6 +43,21 @@ function mergeBooks(current: Book[], incoming: Book[]) {
   return Array.from(booksByPath.values());
 }
 
+async function loadBrowserBooks(paths: string[]): Promise<Book[]> {
+  const restored = await Promise.all(paths.filter(isBrowserBook).map(async path => {
+    const file = await getBrowserBook(path);
+    return file ? {
+      title: file.name.replace(/\.[^.]+$/, ""),
+      author: "",
+      path,
+      format: file.name.split(".").pop()?.toUpperCase() || "BOOK",
+      size: file.size / 1048576,
+      cover: null,
+    } satisfies Book : null;
+  }));
+  return restored.filter((book): book is Book => book !== null);
+}
+
 export default function HyesReadMaster() {
   const router = useRouter();
   const [books, setBooks] = useState<Book[]>([]);
@@ -101,15 +116,15 @@ export default function HyesReadMaster() {
       setLastOpenedBook(restoredLastOpened);
       setBookAddedAt(await readValue<BookAddedAt>("hyes_master.json", "book_added_at", {}));
       if (isDesktop()) {
-        const importPaths = Array.from(new Set([...discretePaths, ...restoredData.discoveredPaths]));
-        const restored = await invoke<Book[]>("import_files", { filePaths: importPaths });
-        setBooks(current => mergeBooks(current, restored));
+        const importPaths = Array.from(new Set([...discretePaths.filter(path => !isBrowserBook(path)), ...restoredData.discoveredPaths]));
+        const [restoredFiles, restoredBrowserBooks] = await Promise.all([
+          importPaths.length ? invoke<Book[]>("import_files", { filePaths: importPaths }) : Promise.resolve([]),
+          loadBrowserBooks(discretePaths),
+        ]);
+        setBooks(current => mergeBooks(mergeBooks(current, restoredFiles), restoredBrowserBooks));
       } else {
-        const restored = await Promise.all(discretePaths.filter(isBrowserBook).map(async path => {
-          const book = await getBrowserBook(path);
-          return book ? { title: book.name.replace(/\.[^.]+$/, ""), author: "", path, format: book.name.split(".").pop()?.toUpperCase() || "BOOK", size: book.size / 1048576, cover: null } satisfies Book : null;
-        }));
-        setBooks(current => mergeBooks(current, restored.filter((book): book is Book => book !== null)));
+        const restoredBrowserBooks = await loadBrowserBooks(discretePaths);
+        setBooks(current => mergeBooks(current, restoredBrowserBooks));
       }
       const portableCount = restoredData.restoredBrowserPaths.length;
       setBackupMessage(`备份已恢复，找到 ${restoredData.discoveredPaths.length} 本本机书籍，恢复 ${portableCount} 本浏览器书籍；${restoredData.bookPathMappings.length} 本书的阅读数据已匹配到当前路径。`);
@@ -231,16 +246,18 @@ export default function HyesReadMaster() {
         
         if (discretePaths && discretePaths.length > 0) {
           if (isDesktop()) {
-            invoke<Book[]>("import_files", { filePaths: discretePaths }).then(res => setBooks(prev => mergeBooks(prev, res.filter(book => !excluded.has(book.path))))).catch(error => {
-              console.error("已导入文件恢复失败", error);
-              setOperationError(`无法恢复已导入的书籍：${String(error)}`);
-            });
+            const diskPaths = discretePaths.filter(path => !isBrowserBook(path));
+            if (diskPaths.length) {
+              invoke<Book[]>("import_files", { filePaths: diskPaths }).then(res => setBooks(prev => mergeBooks(prev, res.filter(book => !excluded.has(book.path))))).catch(error => {
+                console.error("已导入文件恢复失败", error);
+                setOperationError(`无法恢复已导入的书籍：${String(error)}`);
+              });
+            }
+            const restored = await loadBrowserBooks(discretePaths);
+            setBooks(prev => mergeBooks(prev, restored.filter(book => !excluded.has(book.path))));
           } else {
-            const restored = await Promise.all(discretePaths.filter(isBrowserBook).map(async path => {
-              const file = await getBrowserBook(path);
-              return file && !excluded.has(path) ? { title: file.name.replace(/\.[^.]+$/, ""), author: "", path, format: file.name.split(".").pop()?.toUpperCase() || "BOOK", size: file.size / 1048576, cover: null } satisfies Book : null;
-            }));
-            setBooks(prev => mergeBooks(prev, restored.filter(book => book !== null)));
+            const restored = await loadBrowserBooks(discretePaths);
+            setBooks(prev => mergeBooks(prev, restored.filter(book => !excluded.has(book.path))));
           }
         }
 
@@ -310,7 +327,7 @@ export default function HyesReadMaster() {
   const handleOpenBook = async (path: string) => {
     setOperationError("");
     try {
-      if (isDesktop()) await invoke("prepare_book_read", { path });
+      if (isDesktop() && !isBrowserBook(path)) await invoke("prepare_book_read", { path });
       await writeValue("hyes_master.json", "last_opened_book", path);
       setLastOpenedBook(path);
       router.push(`/reader?path=${encodeURIComponent(path)}`);
