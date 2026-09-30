@@ -319,7 +319,7 @@ function ReaderContent() {
   return (
     <main className="h-screen w-screen bg-[#050505] text-zinc-100 flex flex-col">
       <header className="relative h-14 shrink-0 border-b border-white/10 flex items-center gap-3 px-5 max-[640px]:gap-1 max-[640px]:px-2">
-        <button onClick={() => router.back()} className="rounded-lg px-3 py-2 hover:bg-white/10">← 返回书库</button>
+        <button onClick={() => router.push("/")} className="rounded-lg px-3 py-2 hover:bg-white/10">← 返回书库</button>
         <span className="min-w-0 flex-1 text-sm text-zinc-400 truncate">{bookTitle || bookPath?.split(/[\\/]/).pop()}</span>
         {readerReady && supportsTextSearch && <button type="button" aria-label="搜索正文" onClick={() => (document.getElementById("foliate-reader") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ type: "hyesread:toggle-search" }, "*")} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 max-[640px]:px-2">搜索</button>}
         {readerReady && supportsTextSearch && <button type="button" aria-label="高亮所选文字" onClick={addHighlight} disabled={!selection} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-40 max-[640px]:px-2">高亮</button>}

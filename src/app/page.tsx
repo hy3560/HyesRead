@@ -11,7 +11,7 @@ import {
   Clock, NotebookPen,
   HardDrive, FileType, FolderPlus, FilePlus, Book as BookIcon,
   BookOpen, Timer, Trophy, Activity, CalendarDays,
-  Trash2, Search, List, Save
+  Search, List, Save
 } from "lucide-react";
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
@@ -20,7 +20,7 @@ import {
 type ViewType = 'home' | 'library' | 'stats' | 'settings';
 
 interface Book {
-  title: string; author: string; path: string; format: string; size: number; cover: string | null; isFile?: boolean;
+  title: string; author: string; path: string; format: string; size: number; cover: string | null;
 }
 
 interface ReadingSession {
@@ -153,18 +153,20 @@ export default function HyesReadMaster() {
       try {
         const path = await readValue("hyes_master.json", "library_path", "");
         const discretePaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
+        const excludedPaths = await readValue<string[]>("hyes_master.json", "excluded_files", []);
+        const excluded = new Set(excludedPaths);
         setLastOpenedBook(await readValue("hyes_master.json", "last_opened_book", ""));
         
         if (discretePaths && discretePaths.length > 0) {
           if (isDesktop()) {
-            invoke<Book[]>("import_files", { filePaths: discretePaths }).then(res => setBooks(prev => mergeBooks(prev, res))).catch(error => {
+            invoke<Book[]>("import_files", { filePaths: discretePaths }).then(res => setBooks(prev => mergeBooks(prev, res.filter(book => !excluded.has(book.path))))).catch(error => {
               console.error("已导入文件恢复失败", error);
               setOperationError(`无法恢复已导入的书籍：${String(error)}`);
             });
           } else {
             const restored = await Promise.all(discretePaths.filter(isBrowserBook).map(async path => {
               const file = await getBrowserBook(path);
-              return file ? { title: file.name.replace(/\.[^.]+$/, ""), author: "", path, format: file.name.split(".").pop()?.toUpperCase() || "BOOK", size: file.size / 1048576, cover: null, isFile: true } satisfies Book : null;
+              return file && !excluded.has(path) ? { title: file.name.replace(/\.[^.]+$/, ""), author: "", path, format: file.name.split(".").pop()?.toUpperCase() || "BOOK", size: file.size / 1048576, cover: null } satisfies Book : null;
             }));
             setBooks(prev => mergeBooks(prev, restored.filter(book => book !== null)));
           }
@@ -187,13 +189,14 @@ export default function HyesReadMaster() {
     try {
       const result: Book[] = await invoke("scan_library", { folderPath: targetPath });
       await writeValue("hyes_master.json", "library_path", targetPath);
+      const excluded = new Set(await readValue<string[]>("hyes_master.json", "excluded_files", []));
       setBooks(prev => {
           const normalizedRoot = targetPath.replace(/[\\/]+$/, "").toLocaleLowerCase();
           const insideRoot = (path: string) => {
             const normalized = path.toLocaleLowerCase();
             return normalized === normalizedRoot || normalized.startsWith(normalizedRoot + "\\") || normalized.startsWith(normalizedRoot + "/");
           };
-          return mergeBooks(prev.filter(book => !insideRoot(book.path)), result);
+          return mergeBooks(prev.filter(book => !insideRoot(book.path)), result.filter(book => !excluded.has(book.path)));
       });
     } catch (e: any) {
       console.error(e);
@@ -208,6 +211,7 @@ export default function HyesReadMaster() {
     try {
         const result: Book[] = await invoke("import_files", { filePaths: paths });
         await updateValue<string[]>("hyes_master.json", "discrete_files", [], existing => Array.from(new Set([...existing, ...paths])));
+        await updateValue<string[]>("hyes_master.json", "excluded_files", [], existing => existing.filter(path => !paths.includes(path)));
         setBooks(prev => {
             const map = new Map(prev.map(b => [b.path, b]));
             result.forEach(b => map.set(b.path, b));
@@ -235,9 +239,18 @@ export default function HyesReadMaster() {
   };
 
   const handleRemoveBook = async (path: string) => {
+    const browserBook = isBrowserBook(path);
     try {
-      await updateValue<string[]>("hyes_master.json", "discrete_files", [], paths => paths.filter(item => item !== path));
-      if (isBrowserBook(path)) {
+      if (!browserBook) {
+        await updateValue<string[]>("hyes_master.json", "excluded_files", [], existing => Array.from(new Set([...existing, path])));
+      }
+      try {
+        await updateValue<string[]>("hyes_master.json", "discrete_files", [], paths => paths.filter(item => item !== path));
+      } catch (error) {
+        if (!browserBook) await updateValue<string[]>("hyes_master.json", "excluded_files", [], paths => paths.filter(item => item !== path));
+        throw error;
+      }
+      if (browserBook) {
         try {
           await removeBrowserBook(path);
         } catch (error) {
@@ -303,7 +316,7 @@ export default function HyesReadMaster() {
                   for (const file of chosen) {
                     const url = `browser-book:${crypto.randomUUID()}`;
                     await saveBrowserBook(url, file);
-                    const book: Book = { title: file.name.replace(/\.[^.]+$/, ""), author: "", path: url, format: file.name.split(".").pop()?.toUpperCase() || "BOOK", size: file.size / 1048576, cover: null, isFile: true };
+                    const book: Book = { title: file.name.replace(/\.[^.]+$/, ""), author: "", path: url, format: file.name.split(".").pop()?.toUpperCase() || "BOOK", size: file.size / 1048576, cover: null };
                     await updateValue<string[]>("hyes_master.json", "discrete_files", [], existing => Array.from(new Set([...existing, url])));
                     setBooks(prev => [book, ...prev.filter(item => item.path !== url)]);
                   }
@@ -390,7 +403,6 @@ export default function HyesReadMaster() {
                     book={b} 
                     onOpen={handleOpenBook}
                     onDelete={handleRemoveBook}
-                    onError={setOperationError}
                   />
                 ))}
                 </motion.div>
@@ -532,21 +544,7 @@ export default function HyesReadMaster() {
     </div>
   );
 }
-function BookCard({ book, onOpen, onDelete, onError }: { book: Book, onOpen: (path: string) => void, onDelete: (path: string) => void, onError: (message: string) => void }) {
-  const handleDeleteClick = async (e: React.MouseEvent) => {
-    e.stopPropagation(); 
-    if (book.isFile) { onDelete(book.path); return; }
-    if (window.confirm(`确定永久删除《${book.title}》？这会删除硬盘上的原文件。`)) {
-      try {
-        await invoke("delete_book", { path: book.path });
-        onDelete(book.path);
-      } catch (err) {
-        console.error(err);
-        onError(`永久删除失败：${String(err)}`);
-      }
-    }
-  };
-
+function BookCard({ book, onOpen, onDelete }: { book: Book, onOpen: (path: string) => void, onDelete: (path: string) => void }) {
   return (
     <motion.div 
       whileHover={{ y: -8 }} 
@@ -576,12 +574,6 @@ function BookCard({ book, onOpen, onDelete, onError }: { book: Book, onOpen: (pa
       </button>
       <div className="absolute top-2 left-2 z-20 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 [@media(max-width:640px)]:opacity-100">
         <button type="button" aria-label={`从书架移除《${book.title}》`} onClick={e => { e.stopPropagation(); void onDelete(book.path); }} className="rounded-full bg-zinc-800/90 p-2 text-white shadow-xl hover:bg-zinc-700"><BookIcon size={12} /></button>
-        <button
-          type="button"
-          aria-label={`永久删除《${book.title}》文件`}
-          onClick={handleDeleteClick}
-          className="rounded-full bg-red-500/90 p-2 text-white shadow-xl hover:bg-red-500"
-        ><Trash2 size={12} /></button>
       </div>
     </motion.div>
   );

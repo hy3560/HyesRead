@@ -205,16 +205,6 @@ async fn read_text_book(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn delete_book(path: String) -> Result<(), String> {
-    let p = Path::new(&path);
-    if p.exists() && p.is_file() {
-        std::fs::remove_file(p).map_err(|e| format!("物理文件销毁失败: {}", e))
-    } else {
-        Err("文件已不存在或已被其它程序清理".into())
-    }
-}
-
-#[tauri::command]
 async fn reveal_book(path: String) -> Result<(), String> {
     let p = Path::new(&path);
     if !p.is_file() { return Err("目标文件不存在".into()); }
@@ -277,7 +267,6 @@ pub fn run() {
             scan_library, 
             import_files, 
             read_text_book,
-            delete_book,
             open_book,
             reveal_book,
             prepare_book_read,

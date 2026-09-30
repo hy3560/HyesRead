@@ -458,6 +458,11 @@ test("opens a multi-page CBZ and moves between comic pages", async ({ page }) =>
 });
 
 test("removes a browser book only after its shelf entry is saved", async ({ page }) => {
+  const dialogs: string[] = [];
+  page.on("dialog", dialog => {
+    dialogs.push(dialog.message());
+    void dialog.dismiss();
+  });
   await page.goto("/");
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "添加文件" }).click();
@@ -474,6 +479,7 @@ test("removes a browser book only after its shelf entry is saved", async ({ page
   await expect(book).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole("button", { name: "打开《待移除书籍》" })).toHaveCount(0);
+  expect(dialogs).toEqual([]);
 });
 
 test("shows a storage error instead of claiming a book was added", async ({ page }) => {

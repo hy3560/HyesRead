@@ -6,7 +6,6 @@
     "scan_library",
     "import_files",
     "read_text_book",
-    "delete_book",
     "reveal_book",
     "prepare_book_read",
     "take_open_files"

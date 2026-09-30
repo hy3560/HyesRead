@@ -30,6 +30,7 @@ export default function OpenFilesBridge() {
 
           const importedPaths = books.map(book => book.path);
           await updateValue<string[]>("hyes_master.json", "discrete_files", [], existingPaths => Array.from(new Set([...existingPaths, ...importedPaths])));
+          await updateValue<string[]>("hyes_master.json", "excluded_files", [], existingPaths => existingPaths.filter(path => !importedPaths.includes(path)));
 
           const book = books.find(candidate => candidate.path === uniquePaths[0]) ?? books[0];
           await invoke("prepare_book_read", { path: book.path });
