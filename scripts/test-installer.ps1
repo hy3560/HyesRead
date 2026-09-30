@@ -14,6 +14,14 @@ $uninstallLog = Join-Path ([IO.Path]::GetTempPath()) 'hyesread-msi-uninstall.log
 $appProcess = $null
 $productCode = $null
 $appPath = $null
+$stage = 'initialization'
+
+function Write-GitHubFailureSummary([string]$message) {
+  $summaryPath = $env:GITHUB_STEP_SUMMARY
+  if (-not $summaryPath) { return }
+  $safeMessage = $message -replace '[\r\n]+', ' '
+  Add-Content -LiteralPath $summaryPath -Value "`n### HyesRead MSI acceptance failed`n`n- Stage: ``$stage```n- Error: $safeMessage`n- Install log: ``$installLog```n- Uninstall log: ``$uninstallLog```n"
+}
 
 function Get-HyesReadUninstallEntry {
   Get-ChildItem -LiteralPath $uninstallKey -ErrorAction SilentlyContinue |
@@ -23,6 +31,7 @@ function Get-HyesReadUninstallEntry {
 }
 
 try {
+  $stage = 'install MSI'
   Write-Host 'Installing the Windows MSI on the isolated runner.'
   $install = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', "`"$resolvedMsi`"", '/qn', '/norestart', 'AUTOLAUNCHAPP=', '/l*v', "`"$installLog`"") -Wait -PassThru
   if ($install.ExitCode -notin @(0, 3010)) {
@@ -30,6 +39,7 @@ try {
     throw "MSI installation failed with exit code $($install.ExitCode).`n$details"
   }
 
+  $stage = 'find uninstall registration'
   $entry = Get-HyesReadUninstallEntry
   if (-not $entry) {
     $installedApps = Get-ChildItem -LiteralPath $uninstallKey -ErrorAction SilentlyContinue |
@@ -38,17 +48,20 @@ try {
       ForEach-Object { "$($_.DisplayName) [$($_.PSChildName)]" }
     throw "HyesRead was not registered in the Windows uninstall list. Similar entries: $($installedApps -join '; ')"
   }
+  $stage = 'validate product code'
   $productCode = [string]$entry.PSChildName
   if ($productCode -notmatch '^\{[0-9A-Fa-f-]{36}\}$') {
     throw "The installed MSI product code is invalid: $productCode"
   }
 
+  $stage = 'find installed executable'
   $installDirectory = (Get-ItemProperty -LiteralPath $installRegistryKey -Name InstallDir -ErrorAction Stop).InstallDir
   $appPath = Join-Path $installDirectory 'hyes-read.exe'
   if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
     throw "The installed application executable is missing: $appPath"
   }
 
+  $stage = 'check registered file associations'
   if (-not (Test-Path -LiteralPath "$associationKey\shell\open\command")) {
     throw 'The EPUB Open with command was not registered by the installer.'
   }
@@ -58,6 +71,7 @@ try {
     }
   }
 
+  $stage = 'launch installed application with EPUB'
   Write-Host 'Launching an EPUB through the installed application executable.'
   $appProcess = Start-Process -FilePath $appPath -ArgumentList @("`"$fixture`"") -PassThru
   $deadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -74,6 +88,9 @@ try {
   }
 
   Write-Host 'Installed MSI, executable, window startup, and EPUB Open with registration passed.'
+} catch {
+  Write-GitHubFailureSummary $_.Exception.Message
+  throw
 }
 finally {
   if ($appProcess) {
@@ -92,6 +109,7 @@ finally {
     if ($entry) { $productCode = [string]$entry.PSChildName }
   }
   if ($productCode) {
+    $stage = 'uninstall MSI and check cleanup'
     Write-Host 'Uninstalling HyesRead and checking cleanup.'
     $uninstall = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/x', $productCode, '/qn', '/norestart', '/l*v', "`"$uninstallLog`"") -Wait -PassThru
     if ($uninstall.ExitCode -notin @(0, 3010)) {
