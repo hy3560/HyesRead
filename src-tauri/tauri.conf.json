@@ -1,6 +1,6 @@
 {
   "productName": "HyesRead",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "identifier": "com.hyes.read",
   "build": {
     "beforeDevCommand": "npm run dev",

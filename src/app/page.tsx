@@ -7,6 +7,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useRouter } from "next/navigation";
 import OpdsCatalog from "../components/OpdsCatalog";
 import { createBackup, downloadBackup, restoreBackup } from "../lib/backup";
+import { mergeBookAddedAt, removeBookAddedAt, type BookAddedAt } from "../lib/bookOrder";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Library, Settings2, Loader2, Ghost, Globe2,
@@ -45,6 +46,7 @@ function mergeBooks(current: Book[], incoming: Book[]) {
 export default function HyesReadMaster() {
   const router = useRouter();
   const [books, setBooks] = useState<Book[]>([]);
+  const [bookAddedAt, setBookAddedAt] = useState<BookAddedAt>({});
   const [sessions, setSessions] = useState<ReadingSession[]>([]);
   const [chartRange, setChartRange] = useState<'30days' | 'year'>('30days');
 
@@ -82,6 +84,7 @@ export default function HyesReadMaster() {
         readValue<ReadingSession[]>("hyes_stats.json", "sessions", []),
       ]);
       setSessions(storedSessions);
+      setBookAddedAt(await readValue<BookAddedAt>("hyes_master.json", "book_added_at", {}));
       if (isDesktop()) {
         const restored = await invoke<Book[]>("import_files", { filePaths: discretePaths });
         setBooks(current => mergeBooks(current, restored));
@@ -191,8 +194,12 @@ export default function HyesReadMaster() {
     const q = query.trim().toLocaleLowerCase();
     return books
       .filter(book => !q || `${book.title} ${book.author}`.toLocaleLowerCase().includes(q))
-      .sort((a, b) => sortMode === "title" ? a.title.localeCompare(b.title) : sortMode === "author" ? a.author.localeCompare(b.author) : 0);
-  }, [books, query, sortMode]);
+      .sort((a, b) => sortMode === "title"
+        ? a.title.localeCompare(b.title) || a.path.localeCompare(b.path)
+        : sortMode === "author"
+          ? a.author.localeCompare(b.author) || a.title.localeCompare(b.title) || a.path.localeCompare(b.path)
+          : (bookAddedAt[b.path] ?? 0) - (bookAddedAt[a.path] ?? 0) || a.title.localeCompare(b.title) || a.path.localeCompare(b.path));
+  }, [books, bookAddedAt, query, sortMode]);
 
   useEffect(() => {
     (async () => {
@@ -200,6 +207,8 @@ export default function HyesReadMaster() {
         const path = await readValue("hyes_master.json", "library_path", "");
         const discretePaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
         const excludedPaths = await readValue<string[]>("hyes_master.json", "excluded_files", []);
+        const storedBookAddedAt = await readValue<BookAddedAt>("hyes_master.json", "book_added_at", {});
+        setBookAddedAt(storedBookAddedAt);
         const excluded = new Set(excludedPaths);
         setLastOpenedBook(await readValue("hyes_master.json", "last_opened_book", ""));
         
@@ -236,12 +245,18 @@ export default function HyesReadMaster() {
       const result: Book[] = await invoke("scan_library", { folderPath: targetPath });
       await writeValue("hyes_master.json", "library_path", targetPath);
       const excluded = new Set(await readValue<string[]>("hyes_master.json", "excluded_files", []));
+      const normalizedRoot = targetPath.replace(/[\\/]+$/, "").toLocaleLowerCase();
+      const insideRoot = (path: string) => {
+        const normalized = path.toLocaleLowerCase();
+        return normalized === normalizedRoot || normalized.startsWith(normalizedRoot + "\\") || normalized.startsWith(normalizedRoot + "/");
+      };
+      const visiblePaths = new Set(result.filter(book => !excluded.has(book.path)).map(book => book.path));
+      const nextBookAddedAt = await updateValue<BookAddedAt>("hyes_master.json", "book_added_at", {}, current => {
+        const retained = Object.fromEntries(Object.entries(current).filter(([path]) => !insideRoot(path) || visiblePaths.has(path)));
+        return mergeBookAddedAt(retained, Array.from(visiblePaths));
+      });
+      setBookAddedAt(nextBookAddedAt);
       setBooks(prev => {
-          const normalizedRoot = targetPath.replace(/[\\/]+$/, "").toLocaleLowerCase();
-          const insideRoot = (path: string) => {
-            const normalized = path.toLocaleLowerCase();
-            return normalized === normalizedRoot || normalized.startsWith(normalizedRoot + "\\") || normalized.startsWith(normalizedRoot + "/");
-          };
           return mergeBooks(prev.filter(book => !insideRoot(book.path)), result.filter(book => !excluded.has(book.path)));
       });
     } catch (e: any) {
@@ -258,6 +273,8 @@ export default function HyesReadMaster() {
         const result: Book[] = await invoke("import_files", { filePaths: paths });
         await updateValue<string[]>("hyes_master.json", "discrete_files", [], existing => Array.from(new Set([...existing, ...paths])));
         await updateValue<string[]>("hyes_master.json", "excluded_files", [], existing => existing.filter(path => !paths.includes(path)));
+        const nextBookAddedAt = await updateValue<BookAddedAt>("hyes_master.json", "book_added_at", {}, current => mergeBookAddedAt(current, result.map(book => book.path)));
+        setBookAddedAt(nextBookAddedAt);
         setBooks(prev => {
             const map = new Map(prev.map(b => [b.path, b]));
             result.forEach(b => map.set(b.path, b));
@@ -306,6 +323,8 @@ export default function HyesReadMaster() {
           throw error;
         }
       }
+      const nextBookAddedAt = await updateValue<BookAddedAt>("hyes_master.json", "book_added_at", {}, current => removeBookAddedAt(current, path));
+      setBookAddedAt(nextBookAddedAt);
       setBooks(prev => prev.filter(book => book.path !== path));
       if (lastOpenedBook === path) {
         try {
@@ -367,6 +386,8 @@ export default function HyesReadMaster() {
                     await saveBrowserBook(url, file);
                     const book: Book = { title: file.name.replace(/\.[^.]+$/, ""), author: "", path: url, format: file.name.split(".").pop()?.toUpperCase() || "BOOK", size: file.size / 1048576, cover: null };
                     await updateValue<string[]>("hyes_master.json", "discrete_files", [], existing => Array.from(new Set([...existing, url])));
+                    const nextBookAddedAt = await updateValue<BookAddedAt>("hyes_master.json", "book_added_at", {}, current => mergeBookAddedAt(current, [url]));
+                    setBookAddedAt(nextBookAddedAt);
                     setBooks(prev => [book, ...prev.filter(item => item.path !== url)]);
                   }
                   return;

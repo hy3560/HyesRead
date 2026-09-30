@@ -142,6 +142,27 @@ test("exports a backup and merges imported reading data without replacing curren
   expect(result.location.fraction).toBe(0.25);
 });
 
+test("sorts browser imports by added time and keeps the order after reload", async ({ page }) => {
+  await page.goto("/");
+  for (const name of ["recent-order-older", "recent-order-newer"]) {
+    const chooserPromise = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "添加文件" }).click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles({ name: `${name}.txt`, mimeType: "text/plain", buffer: Buffer.from(`${name} content`) });
+    await expect(page.getByRole("button", { name: `打开《${name}》` })).toBeVisible();
+  }
+  const shelfOrder = async () => page.getByRole("button", { name: /^打开《recent-order-/ }).evaluateAll(buttons => buttons.map(button => button.getAttribute("aria-label") || button.textContent));
+  await expect.poll(shelfOrder).toEqual(["打开《recent-order-newer》", "打开《recent-order-older》"]);
+  await page.reload();
+  await expect.poll(shelfOrder).toEqual(["打开《recent-order-newer》", "打开《recent-order-older》"]);
+  const storedOrder = await page.evaluate(() => {
+    const master = JSON.parse(localStorage.getItem("hyes:hyes_master.json") || "{}");
+    return master.discrete_files.map((path: string) => master.book_added_at[path]);
+  });
+  expect(storedOrder).toHaveLength(2);
+  expect(storedOrder[0]).toBeLessThan(storedOrder[1]);
+});
+
 test("opens an uploaded PDF in the bundled reader", async ({ page }) => {
   const runtimeErrors: string[] = [];
   page.on("pageerror", error => runtimeErrors.push(error.message));

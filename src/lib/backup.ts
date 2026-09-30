@@ -1,4 +1,5 @@
 import { readValue, updateValue, writeValue } from "./platform";
+import { mergeBookAddedAt, type BookAddedAt } from "./bookOrder";
 
 const FORMAT = "hyesread-backup";
 const VERSION = 1;
@@ -11,7 +12,7 @@ type BackupFile = {
   format: typeof FORMAT;
   version: number;
   exportedAt: string;
-  master: { libraryPath: string; discreteFiles: string[]; excludedFiles: string[]; lastOpenedBook: string };
+  master: { libraryPath: string; discreteFiles: string[]; excludedFiles: string[]; lastOpenedBook: string; bookAddedAt: BookAddedAt };
   sessions: ReadingSession[];
   catalogs: CatalogSource[];
   readerData: Record<string, string>;
@@ -19,13 +20,17 @@ type BackupFile = {
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+const timestamps = (value: unknown): BookAddedAt => isObject(value)
+  ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[0] === "string" && Number.isFinite(entry[1]) && Number(entry[1]) >= 0))
+  : {};
 
 export async function createBackup(): Promise<BackupFile> {
-  const [libraryPath, discreteFiles, excludedFiles, lastOpenedBook, sessions, catalogs] = await Promise.all([
+  const [libraryPath, discreteFiles, excludedFiles, lastOpenedBook, bookAddedAt, sessions, catalogs] = await Promise.all([
     readValue("hyes_master.json", "library_path", ""),
     readValue<string[]>("hyes_master.json", "discrete_files", []),
     readValue<string[]>("hyes_master.json", "excluded_files", []),
     readValue("hyes_master.json", "last_opened_book", ""),
+    readValue<BookAddedAt>("hyes_master.json", "book_added_at", {}),
     readValue<ReadingSession[]>("hyes_stats.json", "sessions", []),
     readValue<CatalogSource[]>("hyes_catalogs.json", "sources", []),
   ]);
@@ -43,7 +48,7 @@ export async function createBackup(): Promise<BackupFile> {
     format: FORMAT,
     version: VERSION,
     exportedAt: new Date().toISOString(),
-    master: { libraryPath, discreteFiles, excludedFiles, lastOpenedBook },
+    master: { libraryPath, discreteFiles, excludedFiles, lastOpenedBook, bookAddedAt },
     sessions,
     catalogs,
     readerData,
@@ -78,6 +83,7 @@ function parseBackup(value: unknown): BackupFile {
       discreteFiles: strings(value.master.discreteFiles),
       excludedFiles: strings(value.master.excludedFiles),
       lastOpenedBook: typeof value.master.lastOpenedBook === "string" ? value.master.lastOpenedBook : "",
+      bookAddedAt: timestamps(value.master.bookAddedAt),
     },
     sessions: value.sessions as ReadingSession[],
     catalogs: value.catalogs as CatalogSource[],
@@ -119,12 +125,13 @@ function mergeLocalValue(key: string, importedText: string) {
     if (!isObject(current) || !isObject(incoming)) return;
     const merged = { ...incoming, ...current };
     const allowedStoreKeys: Record<string, string[]> = {
-      "hyes:hyes_master.json": ["discrete_files"],
+      "hyes:hyes_master.json": ["discrete_files", "book_added_at"],
       "hyes:hyes_stats.json": ["sessions"],
       "hyes:hyes_catalogs.json": ["sources"],
     };
     for (const storeKey of allowedStoreKeys[key] || []) {
       if (storeKey === "discrete_files") merged[storeKey] = Array.from(new Set([...strings(incoming[storeKey]), ...strings(current[storeKey])]));
+      if (storeKey === "book_added_at") merged[storeKey] = { ...timestamps(incoming[storeKey]), ...timestamps(current[storeKey]) };
       if (storeKey === "sessions") merged[storeKey] = mergeSessions(current[storeKey] as ReadingSession[], incoming[storeKey] as ReadingSession[]);
       if (storeKey === "sources") merged[storeKey] = mergeCatalogs(current[storeKey] as CatalogSource[], incoming[storeKey] as CatalogSource[]);
     }
@@ -165,6 +172,8 @@ export async function restoreBackup(text: string): Promise<void> {
   const mergedExcluded = Array.from(new Set([...existingExcluded, ...backup.master.excludedFiles])).filter(path => !mergedDiscrete.includes(path));
   await writeValue("hyes_master.json", "discrete_files", mergedDiscrete);
   await writeValue("hyes_master.json", "excluded_files", mergedExcluded);
+  const currentBookAddedAt = await readValue<BookAddedAt>("hyes_master.json", "book_added_at", {});
+  await writeValue("hyes_master.json", "book_added_at", { ...timestamps(backup.master.bookAddedAt), ...timestamps(currentBookAddedAt) });
   await updateValue<ReadingSession[]>("hyes_stats.json", "sessions", [], current => mergeSessions(current, backup.sessions));
   await updateValue<CatalogSource[]>("hyes_catalogs.json", "sources", [], current => mergeCatalogs(current, backup.catalogs));
   const currentLibraryPath = await readValue("hyes_master.json", "library_path", "");
