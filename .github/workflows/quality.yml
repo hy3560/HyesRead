@@ -100,9 +100,10 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          if ('${{ steps.msi_acceptance.outputs.failure_message }}' -ne '') {
+          if ('${{ steps.msi_acceptance.outcome }}' -eq 'failure') {
             $stage = '${{ steps.msi_acceptance.outputs.failure_stage }}'
             $message = '${{ steps.msi_acceptance.outputs.failure_message }}'
+            if (-not $message) { $message = 'The acceptance script failed without a diagnostic message.' }
             Write-Output "::error title=HyesRead MSI acceptance failed::$stage - $message"
             throw "Windows MSI lifecycle acceptance failed at $stage. $message"
           }
