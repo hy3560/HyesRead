@@ -135,8 +135,9 @@ fn parse_atom_feed(xml: &str, base_url: &Url) -> Result<OpdsFeed, String> {
     }
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
+    reader.config_mut().expand_empty_elements = true;
     let mut stack = Vec::<String>::new();
-    let mut text_field = None;
+    let mut text_field = Vec::<Option<TextField>>::new();
     let mut feed_title = String::new();
     let mut entries = Vec::new();
     let mut feed_links = Vec::new();
@@ -147,17 +148,17 @@ fn parse_atom_feed(xml: &str, base_url: &Url) -> Result<OpdsFeed, String> {
             Ok(Event::Start(element)) => {
                 let name = local_name(element.local_name().as_ref());
                 let parent = stack.last().map(String::as_str).unwrap_or_default();
+                let field = match name.as_str() {
+                    "title" if entry.is_some() => Some(TextField::EntryTitle),
+                    "title" => Some(TextField::FeedTitle),
+                    "id" if entry.is_some() => Some(TextField::EntryId),
+                    "name" if parent == "author" && entry.is_some() => Some(TextField::EntryAuthor),
+                    "summary" | "content" if entry.is_some() => Some(TextField::EntrySummary),
+                    _ => None,
+                };
+                text_field.push(field);
                 match name.as_str() {
                     "entry" => entry = Some(EntryBuilder::default()),
-                    "title" if entry.is_some() => text_field = Some(TextField::EntryTitle),
-                    "title" => text_field = Some(TextField::FeedTitle),
-                    "id" if entry.is_some() => text_field = Some(TextField::EntryId),
-                    "name" if parent == "author" && entry.is_some() => {
-                        text_field = Some(TextField::EntryAuthor)
-                    }
-                    "summary" | "content" if entry.is_some() => {
-                        text_field = Some(TextField::EntrySummary)
-                    }
                     "link" => {
                         let link = link_from_element(&element, &reader, base_url)?;
                         if let Some(current) = entry.as_mut() {
@@ -179,7 +180,7 @@ fn parse_atom_feed(xml: &str, base_url: &Url) -> Result<OpdsFeed, String> {
                 }
             }
             Ok(Event::Text(text)) => {
-                if let Some(field) = text_field {
+                if let Some(field) = text_field.iter().rev().find_map(|field| *field) {
                     let decoded = text
                         .decode()
                         .map_err(|error| format!("目录文字编码无效：{error}"))?;
@@ -188,8 +189,31 @@ fn parse_atom_feed(xml: &str, base_url: &Url) -> Result<OpdsFeed, String> {
                     push_text(field, &unescaped, &mut feed_title, &mut entry);
                 }
             }
+            Ok(Event::GeneralRef(reference)) => {
+                if let Some(field) = text_field.iter().rev().find_map(|field| *field) {
+                    let decoded = reference
+                        .decode()
+                        .map_err(|error| format!("目录文字编码无效：{error}"))?;
+                    let entity = if decoded.starts_with('#') {
+                        let reference = format!("&{decoded};");
+                        let value = quick_xml::escape::unescape(&reference)
+                            .map_err(|error| format!("目录文字格式无效：{error}"))?;
+                        value.into_owned()
+                    } else {
+                        match decoded.as_ref() {
+                            "amp" => "&".to_string(),
+                            "lt" => "<".to_string(),
+                            "gt" => ">".to_string(),
+                            "apos" => "'".to_string(),
+                            "quot" => "\"".to_string(),
+                            _ => return Err("目录包含未知的 XML 实体".to_string()),
+                        }
+                    };
+                    push_text(field, &entity, &mut feed_title, &mut entry);
+                }
+            }
             Ok(Event::CData(text)) => {
-                if let Some(field) = text_field {
+                if let Some(field) = text_field.iter().rev().find_map(|field| *field) {
                     let decoded = text
                         .decode()
                         .map_err(|error| format!("目录文字编码无效：{error}"))?;
@@ -198,12 +222,6 @@ fn parse_atom_feed(xml: &str, base_url: &Url) -> Result<OpdsFeed, String> {
             }
             Ok(Event::End(element)) => {
                 let name = local_name(element.local_name().as_ref());
-                let parent = stack
-                    .iter()
-                    .rev()
-                    .nth(1)
-                    .map(String::as_str)
-                    .unwrap_or_default();
                 match name.as_str() {
                     "entry" => {
                         if let Some(current) = entry.take() {
@@ -218,13 +236,11 @@ fn parse_atom_feed(xml: &str, base_url: &Url) -> Result<OpdsFeed, String> {
                                 entries.push(item);
                             }
                         }
-                        text_field = None;
                     }
-                    "title" | "id" | "summary" | "content" => text_field = None,
-                    "name" if parent == "author" => text_field = None,
                     _ => {}
                 }
                 stack.pop();
+                text_field.pop();
             }
             Ok(Event::Eof) => break,
             Ok(_) => {}
@@ -246,10 +262,26 @@ fn parse_atom_feed(xml: &str, base_url: &Url) -> Result<OpdsFeed, String> {
     })
 }
 
+fn is_same_origin_redirect(previous: &[Url], next: &Url) -> bool {
+    previous.iter().all(|previous| {
+        previous.scheme() == next.scheme()
+            && previous.host_str() == next.host_str()
+            && previous.port_or_known_default() == next.port_or_known_default()
+    })
+}
+
 fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::limited(8))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 8 {
+                return attempt.error("重定向次数过多");
+            }
+            if !is_same_origin_redirect(attempt.previous(), attempt.url()) {
+                return attempt.error("目录重定向不能切换网络源");
+            }
+            attempt.follow()
+        }))
         .user_agent(concat!("HyesRead/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| format!("无法初始化网络连接：{error}"))
@@ -394,7 +426,8 @@ pub async fn download_book(raw_url: &str, destination: &str) -> Result<String, S
 
 #[cfg(test)]
 mod tests {
-    use super::{download_book, parse_atom_feed, validate_http_url};
+    use super::{download_book, is_same_origin_redirect, parse_atom_feed, validate_http_url};
+    use std::time::Duration;
 
     #[test]
     fn parses_navigation_acquisition_and_pagination_links() {
@@ -424,10 +457,45 @@ mod tests {
     }
 
     #[test]
+    fn parses_inline_atom_text_and_repeated_titles() {
+        let base = validate_http_url("https://catalog.example/opds").unwrap();
+        let xml = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+          <title>目录 A &amp; B</title>
+          <entry><id>id</id><title>第一本</title><author><name>作者</name></author>
+            <summary>摘要 <em>带格式</em> 的内容</summary></entry>
+          <entry><id>id-2</id><title>第二本</title></entry>
+        </feed>"#;
+        let feed = parse_atom_feed(xml, &base).unwrap();
+        assert_eq!(feed.title, "目录 A & B");
+        assert_eq!(feed.entries.len(), 2);
+        assert_eq!(feed.entries[0].summary, "摘要 带格式 的内容");
+        assert_eq!(feed.entries[1].title, "第二本");
+    }
+
+    #[test]
     fn rejects_unsafe_or_credential_bearing_catalog_urls() {
         assert!(validate_http_url("file:///C:/books").is_err());
         assert!(validate_http_url("javascript:alert(1)").is_err());
         assert!(validate_http_url("https://reader:secret@example.com/opds").is_err());
+    }
+
+    #[test]
+    fn redirect_policy_keeps_network_origin_fixed() {
+        let prior = validate_http_url("http://127.0.0.1:8765/feed").unwrap();
+        assert!(is_same_origin_redirect(
+            std::slice::from_ref(&prior),
+            &validate_http_url("http://127.0.0.1:8765/next").unwrap()
+        ));
+        for url in [
+            "http://localhost:8765/next",
+            "http://127.0.0.1:8766/next",
+            "https://127.0.0.1:8765/next",
+        ] {
+            assert!(!is_same_origin_redirect(
+                std::slice::from_ref(&prior),
+                &validate_http_url(url).unwrap()
+            ));
+        }
     }
 
     #[test]
@@ -473,5 +541,76 @@ mod tests {
         ));
         assert!(duplicate.unwrap_err().contains("已存在"));
         std::fs::remove_file(destination).unwrap();
+    }
+
+    #[test]
+    fn rejects_cross_origin_redirects_but_allows_same_origin_redirects() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        fn serve_once(status: &'static str, location: Option<String>) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request);
+                let location_header = location
+                    .map(|url| format!("Location: {url}\r\n"))
+                    .unwrap_or_default();
+                write!(stream, "HTTP/1.1 {status}\r\n{location_header}Content-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            });
+            format!("http://{address}/start")
+        }
+
+        fn make_client() -> Result<reqwest::Client, String> {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if !is_same_origin_redirect(attempt.previous(), attempt.url()) {
+                        return attempt.error("目录重定向不能切换网络源");
+                    }
+                    attempt.follow()
+                }))
+                .build()
+                .map_err(|error| error.to_string())
+        }
+
+        let external = serve_once("302 Found", Some("http://localhost:45678/".to_string()));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let error = runtime.block_on(async {
+            let client = make_client().unwrap();
+            client.get(external).send().await.unwrap_err()
+        });
+        assert!(error.is_redirect());
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = first.read(&mut request);
+            write!(first, "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let _ = second.read(&mut request);
+            write!(
+                second,
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+        let response = runtime
+            .block_on(async {
+                make_client()
+                    .unwrap()
+                    .get(format!("http://{address}/start"))
+                    .send()
+                    .await
+            })
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        server.join().unwrap();
     }
 }
