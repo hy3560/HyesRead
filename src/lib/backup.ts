@@ -11,6 +11,8 @@ const READER_KEY_PREFIXES = ["hyes-reader-location:", "hyes-bookmarks:", "hyes-h
 
 type ReadingSession = { date: string; duration: number; bookPath: string };
 type CatalogSource = { name: string; url: string };
+type BrowserBookBackup = { id: string; name: string; type: string; data: string; sha256?: string };
+
 type BackupFile = {
   format: typeof FORMAT;
   version: number;
@@ -19,10 +21,10 @@ type BackupFile = {
   sessions: ReadingSession[];
   catalogs: CatalogSource[];
   readerData: Record<string, string>;
-  browserBooks?: { id: string; name: string; type: string; data: string }[];
+  browserBooks?: BrowserBookBackup[];
 };
 
-type PortableBackupFile = BackupFile & { browserBooks?: { id: string; name: string; type: string; data: string }[] };
+type PortableBackupFile = BackupFile;
 
 export type BackupRestoreResult = { bookPathMappings: [string, string][]; discoveredPaths: string[]; restoredBrowserPaths: string[] };
 
@@ -62,12 +64,14 @@ export async function createBackup(): Promise<PortableBackupFile> {
     readerData,
   };
   const files = await listBrowserBooks(discreteFiles);
-  backup.browserBooks = await Promise.all(files.map(async ({ id, file }) => ({
-    id,
-    name: file.name,
-    type: file.type,
-    data: await blobToBase64(file),
-  })));
+  const estimatedBytes = new TextEncoder().encode(JSON.stringify(backup)).byteLength
+    + files.reduce((total, { file }) => total + 4 * Math.ceil(file.size / 3) + file.name.length + file.type.length + 256, 0);
+  if (estimatedBytes > MAX_BACKUP_BYTES) throw new Error("备份文件超过 2 GB 限制");
+  backup.browserBooks = [];
+  for (const { id, file } of files) {
+    const data = await blobToBase64(file);
+    backup.browserBooks.push({ id, name: file.name, type: file.type, data, sha256: await sha256(base64ToBytes(data)) });
+  }
   return backup;
 }
 
@@ -78,6 +82,11 @@ function blobToBase64(blob: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error || new Error("读取书籍文件失败"));
     reader.readAsDataURL(blob);
   });
+}
+
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function base64ToBytes(value: string): Uint8Array {
@@ -109,7 +118,8 @@ function parseBackup(value: unknown): BackupFile {
   const browserBooks = value.browserBooks === undefined ? [] : value.browserBooks;
   if (!Array.isArray(browserBooks) || !browserBooks.every(item => isObject(item)
     && typeof item.id === "string" && isBrowserBook(item.id)
-    && typeof item.name === "string" && typeof item.type === "string" && typeof item.data === "string")) {
+    && typeof item.name === "string" && typeof item.type === "string" && typeof item.data === "string"
+    && (item.sha256 === undefined || (typeof item.sha256 === "string" && /^[a-f0-9]{64}$/i.test(item.sha256))))) {
     throw new Error("备份中的书籍文件格式无效");
   }
   const ids = new Set<string>();
@@ -229,6 +239,10 @@ export async function restoreBackup(text: string, selectedLibraryPath = ""): Pro
   const backup = parseBackup(parsed);
   const totalBookBytes = (backup.browserBooks || []).reduce((total, book) => total + Math.floor(book.data.length * 3 / 4), 0);
   if (new TextEncoder().encode(text).byteLength + totalBookBytes > MAX_BACKUP_BYTES) throw new Error("备份文件超过 2 GB 限制");
+  for (const book of backup.browserBooks || []) {
+    if (!book.sha256) continue;
+    if (await sha256(base64ToBytes(book.data)) !== book.sha256.toLowerCase()) throw new Error(`备份中的书籍文件校验失败：${book.name}`);
+  }
 
   const currentLibraryPath = selectedLibraryPath || await readValue("hyes_master.json", "library_path", "");
   let discoveredPaths: string[] = [];
