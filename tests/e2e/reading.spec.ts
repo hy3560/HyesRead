@@ -114,6 +114,50 @@ test("opens an uploaded PDF in the bundled reader", async ({ page }) => {
   await expect(reader.locator(".search-result").first()).toContainText("第 1 页");
   await reader.locator(".search-result").first().click();
   await expect.poll(() => reader.locator("#progress-slider").getAttribute("title")).toContain("Loc");
+  const selectedPdfPassage = await reader.locator("foliate-view").evaluate(() => {
+    const host = window as unknown as { reader?: { view?: { renderer?: { getContents?: () => { doc: Document }[] } } } };
+    for (const { doc } of host.reader?.view?.renderer?.getContents?.() ?? []) {
+      const walker = doc.createTreeWalker(doc.querySelector(".textLayer") || doc.body, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        const start = node.textContent?.indexOf("acceptance page 1") ?? -1;
+        if (start < 0) continue;
+        const range = doc.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + "acceptance page 1".length);
+        doc.getSelection()?.removeAllRanges();
+        doc.getSelection()?.addRange(range);
+        return true;
+      }
+    }
+    return false;
+  });
+  expect(selectedPdfPassage).toBe(true);
+  const pdfHighlightButton = page.getByRole("button", { name: "高亮所选文字" });
+  await expect(pdfHighlightButton).toBeEnabled();
+  await pdfHighlightButton.click();
+  await expect.poll(() => reader.locator("foliate-view").evaluate(() => {
+    const host = window as unknown as { reader?: { annotationsByValue?: Map<string, unknown>; view?: { renderer?: { getContents?: () => { doc: Document; index: number; overlayer?: { element: SVGSVGElement } }[] } } } };
+    const pdfPage = host.reader?.view?.renderer?.getContents?.().find(item => item.index === 0);
+    return {
+      annotations: host.reader?.annotationsByValue?.size ?? 0,
+      pdfPage: pdfPage ? { index: pdfPage.index, hasOverlay: Boolean(pdfPage.overlayer), connected: pdfPage.overlayer?.element.isConnected, childCount: pdfPage.overlayer?.element.childElementCount } : null,
+    };
+  })).toEqual({ annotations: 1, pdfPage: { index: 0, hasOverlay: true, connected: true, childCount: 1 } });
+  const savedHighlight = await page.evaluate(() => {
+    const entry = Object.entries(localStorage).find(([key]) => key.startsWith("hyes-highlights:"));
+    return entry ? JSON.parse(entry[1])[0] as { text?: string; value?: string } : null;
+  });
+  expect(savedHighlight?.text).toBe("acceptance page 1");
+  const highlightErrors: string[] = [];
+  page.on("pageerror", error => highlightErrors.push(error.message));
+  expect(highlightErrors).toEqual([]);
+  await page.getByRole("button", { name: "← 返回书库" }).click();
+  await page.getByRole("button", { name: "打开《hyesread-acceptance》" }).click();
+  await expect.poll(() => page.frameLocator("#foliate-reader").locator("foliate-view").evaluate(() => {
+    const host = window as unknown as { reader?: { annotationsByValue?: Map<string, unknown> } };
+    return host.reader?.annotationsByValue?.size ?? 0;
+  })).toBe(1);
   const pdfState = await reader.locator("body").evaluate(() => {
     const host = window as unknown as {
       reader?: { view?: { book?: { rendition?: { layout?: string }; sections?: unknown[] } } };

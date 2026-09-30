@@ -343,7 +343,59 @@ try {
   const pdfSearchResult = await pdfReaderFrame.locator(".search-result").first().innerText().catch(() => "");
   if (!pdfSearchResult.includes("HyesRead")) throw new Error(`WebView2 PDF search did not find the passage: ${pdfSearchResult}`);
   await pdfReaderFrame.locator(".search-result").first().click();
-  await delay(500);
+  const selectedPdfPassage = await pdfReaderFrame.locator("foliate-view").evaluate(async () => {
+    for (const { doc } of window.reader?.view?.renderer?.getContents?.() ?? []) {
+      const walker = doc.createTreeWalker(doc.querySelector(".textLayer") || doc.body, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        const text = node.textContent || "";
+        const start = text.indexOf("HyesRead native PDF acceptance");
+        if (start < 0) continue;
+        const range = doc.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + "HyesRead native PDF acceptance".length);
+        doc.getSelection()?.removeAllRanges();
+        doc.getSelection()?.addRange(range);
+        doc.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+        doc.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+        return true;
+      }
+    }
+    return false;
+  });
+  if (!selectedPdfPassage) throw new Error("WebView2 could not select the PDF text layer passage.");
+  const nativePageState = await page.evaluate(() => ({
+    href: location.href,
+    path: new URL(location.href).searchParams.get("path"),
+    title: document.querySelector("#foliate-reader")?.getAttribute("title"),
+    highlightButtonDisabled: Array.from(document.querySelectorAll("button")).find(button => button.getAttribute("aria-label") === "高亮所选文字")?.disabled,
+    selected: document.querySelector("#foliate-reader")?.contentWindow?.reader?.view?.renderer?.getContents?.().map(item => item.doc?.getSelection()?.toString()),
+    localStorageAvailable: (() => { try { localStorage.setItem("hyesread:test", "1"); const v = localStorage.getItem("hyesread:test"); localStorage.removeItem("hyesread:test"); return v === "1"; } catch { return false; } })(),
+  }));
+  const highlightButton = page.getByRole("button", { name: "高亮所选文字" });
+  await highlightButton.waitFor({ state: "visible", timeout: 10_000 });
+  const selectionDeadline = Date.now() + 5_000;
+  while (Date.now() < selectionDeadline && await highlightButton.isDisabled()) await delay(50);
+  if (await highlightButton.isDisabled()) throw new Error(`WebView2 did not expose the selected PDF text to the app: ${JSON.stringify(nativePageState)}`);
+  await highlightButton.click();
+  await delay(100);
+  let pdfHighlightState = { count: 0, rendered: 0 };
+  const pdfHighlightDeadline = Date.now() + 10_000;
+  while (Date.now() < pdfHighlightDeadline && (pdfHighlightState.count !== 1 || pdfHighlightState.rendered !== 1)) {
+    pdfHighlightState = await page.evaluate(() => {
+      const activePath = decodeURIComponent(new URL(location.href).searchParams.get("path") || "");
+      const saved = JSON.parse(localStorage.getItem(`hyes-highlights:${activePath}`) || "[]");
+      const frame = document.querySelector("#foliate-reader");
+      const view = frame?.contentWindow?.reader?.view;
+      const pdfPage = view?.renderer?.getContents?.().find(item => item.index === 0);
+      return { count: saved.length, rendered: pdfPage?.overlayer?.element.childElementCount || 0 };
+    });
+    if (pdfHighlightState.count !== 1 || pdfHighlightState.rendered !== 1) await delay(100);
+  }
+  if (pdfHighlightState.count !== 1 || pdfHighlightState.rendered !== 1) {
+    const pageErrors = await page.evaluate(() => ({ url: location.href, errors: Array.from(document.querySelectorAll("main > div, [role=alert]")).map(element => element.textContent).filter(Boolean), buttons: Array.from(document.querySelectorAll("button")).map(button => ({ label: button.getAttribute("aria-label"), text: button.textContent, disabled: button.disabled })) }));
+    throw new Error(`WebView2 did not persist and render the PDF highlight: ${JSON.stringify({ pdfHighlightState, failures, nativePageState, pageErrors })}`);
+  }
   log("checking shelf removal persistence without deleting the source file");
   await page.getByRole("button", { name: "← 返回书库" }).click();
   const cardDeadline = Date.now() + 10_000;
@@ -364,11 +416,20 @@ try {
   await page.getByRole("button", { name: `从书架移除《${title}》` }).click();
   await nativeBook.waitFor({ state: "detached", timeout: 10_000 });
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
+  const beforeRestartStorage = await page.evaluate(path => ({
+    path,
+    saved: JSON.parse(localStorage.getItem(`hyes-highlights:${path}`) || "[]"),
+  }), pdfFixture);
+  if (beforeRestartStorage.saved.length !== 1 || beforeRestartStorage.saved[0]?.value !== "hyespdf:0:0:30") {
+    throw new Error("The PDF highlight was not saved under the book path before app exit.");
+  }
+  const appExit = new Promise(resolvePromise => app.once("exit", resolvePromise));
+  await page.close().catch(() => undefined);
+  await Promise.race([appExit, delay(15_000)]);
+  if (app.exitCode === null) stopProcess(app);
+  await Promise.race([appExit, delay(5_000)]);
   await browser.close();
   browser = undefined;
-  const appExit = new Promise(resolvePromise => app.once("exit", resolvePromise));
-  stopProcess(app);
-  await Promise.race([appExit, delay(5_000)]);
   if (app.exitCode === null) throw new Error("The desktop app did not exit before the restart check.");
   app = spawn(executable, [], { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], env: appEnvironment });
   captureAppOutput(app.stdout, "stdout");
@@ -389,9 +450,51 @@ try {
     throw new Error("The removed PDF returned to the shelf after restarting the desktop app.");
   }
   await access(pdfFixture);
+  secondLaunch = spawn(executable, [pdfFixture], { cwd: projectRoot, stdio: "ignore", env: appEnvironment });
+  const reopenExitCode = await Promise.race([
+    new Promise(resolvePromise => secondLaunch.once("exit", resolvePromise)),
+    delay(15_000).then(() => null),
+  ]);
+  if (reopenExitCode === null) {
+    stopProcess(secondLaunch);
+    throw new Error("Opening the removed PDF again did not return control to the running desktop app.");
+  }
+  await shelfPage.waitForURL(url => url.href.includes("/reader?path=") && url.href.includes("acceptance.pdf"), { timeout: 30_000 });
+  let restoredPdfFrame;
+  const restoredPdfDeadline = Date.now() + 30_000;
+  while (Date.now() < restoredPdfDeadline) {
+    restoredPdfFrame = browser.contexts().flatMap(context => context.pages()).flatMap(candidate => candidate.frames())
+      .find(frame => frame.url().includes("/assets/web_reader/foliate-js/reader.html") && frame.url().includes("url="));
+    if (restoredPdfFrame) break;
+    await delay(100);
+  }
+  if (!restoredPdfFrame) throw new Error("The reopened PDF did not load its bundled reader.");
+  await restoredPdfFrame.locator("foliate-view").waitFor({ state: "visible", timeout: 30_000 });
+  const restoredPdfHighlightDeadline = Date.now() + 10_000;
+  let restoredPdfHighlight = { annotations: 0, stored: 0, rendered: 0 };
+  while (Date.now() < restoredPdfHighlightDeadline && (restoredPdfHighlight.annotations !== 1 || restoredPdfHighlight.rendered !== 1)) {
+    restoredPdfHighlight = await shelfPage.evaluate(() => {
+      const readerFrame = document.querySelector("#foliate-reader");
+      const readerWindow = readerFrame?.contentWindow;
+      const activePath = decodeURIComponent(new URL(location.href).searchParams.get("path") || "");
+      const stored = JSON.parse(localStorage.getItem(`hyes-highlights:${activePath}`) || "[]");
+      const pdfPage = readerWindow?.reader?.view?.renderer?.getContents?.().find(item => item.index === 0);
+      return {
+        annotations: readerWindow?.reader?.annotationsByValue?.size || 0,
+        stored: stored.length,
+        rendered: pdfPage?.overlayer?.element.childElementCount || 0,
+      };
+    });
+    if (restoredPdfHighlight.annotations !== 1 || restoredPdfHighlight.rendered !== 1) await delay(100);
+  }
+  if (restoredPdfHighlight.annotations !== 1 || restoredPdfHighlight.stored !== 1 || restoredPdfHighlight.rendered !== 1) {
+    throw new Error(`WebView2 did not restore the PDF highlight after reopening: ${JSON.stringify(restoredPdfHighlight)}`);
+  }
+  await shelfPage.getByRole("button", { name: "← 返回书库" }).click();
+  await shelfPage.getByRole("button", { name: "打开《hyesread-native-acceptance》" }).waitFor({ state: "visible", timeout: 10_000 });
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 
-  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, pdfPageRendered: true, pdfSearch: true, shelfRemovalPersists: true, sourceFilePreserved: true, secondLaunchForwarded: true }));
+  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, pdfPageRendered: true, pdfSearch: true, pdfHighlight: true, pdfHighlightRestore: true, shelfRemovalPersists: true, sourceFilePreserved: true, secondLaunchForwarded: true }));
 } finally {
   if (browser) await browser.close().catch(() => undefined);
   for (const child of [secondLaunch, app]) {

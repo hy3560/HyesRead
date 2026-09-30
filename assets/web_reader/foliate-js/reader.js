@@ -200,7 +200,7 @@ class Reader {
             const { index } = e.detail
             const list = this.annotations.get(index)
             if (list) for (const annotation of list)
-                this.view.addAnnotation(annotation)
+                this.view.addAnnotation(annotation).catch(error => console.error(error))
         })
         this.view.addEventListener('draw-annotation', e => {
             const { draw, annotation } = e.detail
@@ -321,6 +321,11 @@ class Reader {
             this.annotations.set(index, list.filter(item => item.value !== value))
     }
     #onLoad({ detail: { doc, index } }) {
+        doc.addEventListener('hyesread:pdf-rendered', () => {
+            if (!doc.querySelector('.textLayer')) return
+            for (const annotation of this.annotations.get(index) ?? [])
+                this.view.addAnnotation(annotation).catch(error => console.error(error))
+        })
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         const reportSelection = () => {
             const selection = doc.getSelection()

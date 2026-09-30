@@ -64,6 +64,47 @@ const render = async (page, doc, zoom) => {
     }
     await new pdfjsLib.AnnotationLayer({ page, viewport, div, linkService })
         .render({ annotations: await page.getAnnotations() })
+    doc.dispatchEvent(new Event('hyesread:pdf-rendered'))
+}
+
+const textNodes = root => {
+    const nodes = []
+    const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let node
+    while ((node = walker.nextNode())) nodes.push(node)
+    return nodes
+}
+
+const rangeOffsets = (root, range) => {
+    const nodes = textNodes(root)
+    let offset = 0
+    let start = -1
+    let end = -1
+    for (const node of nodes) {
+        const length = node.textContent?.length ?? 0
+        if (node === range.startContainer) start = offset + range.startOffset
+        if (node === range.endContainer) end = offset + range.endOffset
+        offset += length
+    }
+    return start >= 0 && end >= start ? [start, end] : null
+}
+
+const rangeFromOffsets = (root, start, end) => {
+    const nodes = textNodes(root)
+    let offset = 0
+    let startPoint
+    let endPoint
+    for (const node of nodes) {
+        const length = node.textContent?.length ?? 0
+        if (!startPoint && start <= offset + length) startPoint = [node, start - offset]
+        if (!endPoint && end <= offset + length) endPoint = [node, end - offset]
+        offset += length
+    }
+    if (!startPoint || !endPoint) throw new Error('PDF text anchor is outside the rendered page')
+    const range = root.ownerDocument.createRange()
+    range.setStart(...startPoint)
+    range.setEnd(...endPoint)
+    return range
 }
 
 const renderPage = async (page, getImageBlob) => {
@@ -127,6 +168,21 @@ export const makePDF = async file => {
     }).promise
 
     const book = { rendition: { layout: 'pre-paginated' } }
+    book.getAnnotationValue = (index, range) => {
+        const root = range.startContainer.ownerDocument.querySelector('.textLayer')
+        if (!root) return null
+        const offsets = rangeOffsets(root, range)
+        return offsets ? `hyespdf:${index}:${offsets[0]}:${offsets[1]}` : null
+    }
+    book.resolveCFI = value => {
+        const match = /^hyespdf:(\d+):(\d+):(\d+)$/.exec(value)
+        if (!match) return null
+        const [, page, start, end] = match.map(Number)
+        return {
+            index: page,
+            anchor: doc => rangeFromOffsets(doc.querySelector('.textLayer'), start, end),
+        }
+    }
     book.searchText = async query => {
         const normalizedQuery = query.toLocaleLowerCase()
         if (!normalizedQuery) return []
