@@ -1,5 +1,7 @@
-import { readValue, updateValue, writeValue } from "./platform";
-import { mergeBookAddedAt, type BookAddedAt } from "./bookOrder";
+import { invoke, readValue, updateValue, writeValue } from "./platform";
+import type { BookAddedAt } from "./bookOrder";
+import { mapBookPaths } from "./bookPaths";
+import { remapBackupPaths } from "./backupPaths";
 
 const FORMAT = "hyesread-backup";
 const VERSION = 1;
@@ -17,6 +19,8 @@ type BackupFile = {
   catalogs: CatalogSource[];
   readerData: Record<string, string>;
 };
+
+export type BackupRestoreResult = { bookPathMappings: [string, string][]; discoveredPaths: string[] };
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -158,29 +162,58 @@ function mergeCatalogs(current: CatalogSource[] = [], incoming: CatalogSource[] 
   return Array.from(sources.values());
 }
 
-export async function restoreBackup(text: string): Promise<void> {
+function mapLibraryPaths(backup: BackupFile, libraryPath: string, discoveredPaths: string[]): [string, string][] {
+  const sourcePaths = new Set<string>([
+    ...backup.master.discreteFiles,
+    ...backup.sessions.map(session => session.bookPath),
+    ...Object.keys(backup.readerData).flatMap(key => {
+      const prefix = READER_KEY_PREFIXES.find(item => key.startsWith(item));
+      return prefix ? [key.slice(prefix.length)] : [];
+    }),
+  ]);
+  return mapBookPaths(backup.master.libraryPath, libraryPath, Array.from(sourcePaths), discoveredPaths);
+}
+
+export async function restoreBackup(text: string, selectedLibraryPath = ""): Promise<BackupRestoreResult> {
   if (new TextEncoder().encode(text).byteLength > MAX_IMPORT_BYTES) throw new Error("备份文件超过 50 MB 限制");
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { throw new Error("无法解析备份文件"); }
   const backup = parseBackup(parsed);
 
+  const currentLibraryPath = selectedLibraryPath || await readValue("hyes_master.json", "library_path", "");
+  let discoveredPaths: string[] = [];
+  if (currentLibraryPath) {
+    try {
+      const books = await invoke<{ path: string }[]>("scan_library", { folderPath: currentLibraryPath });
+      discoveredPaths = books.map(book => book.path);
+    } catch {
+      // An inaccessible current library must not prevent restoring its other data.
+    }
+  }
+  const bookPathMappings = mapLibraryPaths(backup, currentLibraryPath, discoveredPaths);
+  const remappedBackup = remapBackupPaths(backup, bookPathMappings);
+
   const [existingDiscrete, existingExcluded] = await Promise.all([
     readValue<string[]>("hyes_master.json", "discrete_files", []),
     readValue<string[]>("hyes_master.json", "excluded_files", []),
   ]);
-  const mergedDiscrete = Array.from(new Set([...existingDiscrete, ...backup.master.discreteFiles]));
-  const mergedExcluded = Array.from(new Set([...existingExcluded, ...backup.master.excludedFiles])).filter(path => !mergedDiscrete.includes(path));
+  const remappedDiscrete = remappedBackup.master.discreteFiles;
+  const mergedDiscrete = Array.from(new Set([...existingDiscrete, ...remappedDiscrete]));
+  const remappedExcluded = remappedBackup.master.excludedFiles;
+  const mergedExcluded = Array.from(new Set([...existingExcluded, ...remappedExcluded])).filter(path => !mergedDiscrete.includes(path));
   await writeValue("hyes_master.json", "discrete_files", mergedDiscrete);
   await writeValue("hyes_master.json", "excluded_files", mergedExcluded);
   const currentBookAddedAt = await readValue<BookAddedAt>("hyes_master.json", "book_added_at", {});
-  await writeValue("hyes_master.json", "book_added_at", { ...timestamps(backup.master.bookAddedAt), ...timestamps(currentBookAddedAt) });
-  await updateValue<ReadingSession[]>("hyes_stats.json", "sessions", [], current => mergeSessions(current, backup.sessions));
+  await writeValue("hyes_master.json", "book_added_at", { ...timestamps(remappedBackup.master.bookAddedAt), ...timestamps(currentBookAddedAt) });
+  await updateValue<ReadingSession[]>("hyes_stats.json", "sessions", [], current => mergeSessions(current, remappedBackup.sessions));
   await updateValue<CatalogSource[]>("hyes_catalogs.json", "sources", [], current => mergeCatalogs(current, backup.catalogs));
-  const currentLibraryPath = await readValue("hyes_master.json", "library_path", "");
   if (!currentLibraryPath && backup.master.libraryPath) await writeValue("hyes_master.json", "library_path", backup.master.libraryPath);
+  if (selectedLibraryPath) await writeValue("hyes_master.json", "library_path", selectedLibraryPath);
   const currentLastOpened = await readValue("hyes_master.json", "last_opened_book", "");
-  if (!currentLastOpened && backup.master.lastOpenedBook) await writeValue("hyes_master.json", "last_opened_book", backup.master.lastOpenedBook);
-  for (const [key, value] of Object.entries(backup.readerData)) mergeLocalValue(key, value);
+  if (!currentLastOpened && remappedBackup.master.lastOpenedBook) await writeValue("hyes_master.json", "last_opened_book", remappedBackup.master.lastOpenedBook);
+  for (const [key, value] of Object.entries(remappedBackup.readerData)) mergeLocalValue(key, value);
+  const visibleDiscoveredPaths = discoveredPaths.filter(path => !mergedExcluded.includes(path));
+  return { bookPathMappings, discoveredPaths: visibleDiscoveredPaths };
 }
 
 export function downloadBackup(backup: BackupFile) {

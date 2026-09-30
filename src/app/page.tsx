@@ -78,15 +78,30 @@ export default function HyesReadMaster() {
     setBackupMessage("");
     try {
       if (file.size > 50 * 1024 * 1024) throw new Error("备份文件超过 50 MB 限制");
-      await restoreBackup(await file.text());
-      const [discretePaths, storedSessions] = await Promise.all([
+      const backupText = await file.text();
+      const backupDocument = JSON.parse(backupText) as { master?: { libraryPath?: string } };
+      let selectedLibraryPath = "";
+      if (isDesktop() && backupDocument.master?.libraryPath) {
+        try {
+          await invoke("scan_library", { folderPath: backupDocument.master.libraryPath });
+          selectedLibraryPath = backupDocument.master.libraryPath;
+        } catch {
+          const selected = await openDialog({ directory: true, multiple: false, title: "选择当前设备上的书籍文件夹" });
+          if (typeof selected === "string") selectedLibraryPath = selected;
+        }
+      }
+      const restoredData = await restoreBackup(backupText, selectedLibraryPath);
+      const [discretePaths, storedSessions, restoredLastOpened] = await Promise.all([
         readValue<string[]>("hyes_master.json", "discrete_files", []),
         readValue<ReadingSession[]>("hyes_stats.json", "sessions", []),
+        readValue("hyes_master.json", "last_opened_book", ""),
       ]);
       setSessions(storedSessions);
+      setLastOpenedBook(restoredLastOpened);
       setBookAddedAt(await readValue<BookAddedAt>("hyes_master.json", "book_added_at", {}));
       if (isDesktop()) {
-        const restored = await invoke<Book[]>("import_files", { filePaths: discretePaths });
+        const importPaths = Array.from(new Set([...discretePaths, ...restoredData.discoveredPaths]));
+        const restored = await invoke<Book[]>("import_files", { filePaths: importPaths });
         setBooks(current => mergeBooks(current, restored));
       } else {
         const restored = await Promise.all(discretePaths.filter(isBrowserBook).map(async path => {
@@ -95,7 +110,7 @@ export default function HyesReadMaster() {
         }));
         setBooks(current => mergeBooks(current, restored.filter((book): book is Book => book !== null)));
       }
-      setBackupMessage("备份数据已合并。书籍文件没有复制；缺失的文件请重新导入。 ");
+      setBackupMessage(`备份已恢复，找到 ${restoredData.discoveredPaths.length} 本书；${restoredData.bookPathMappings.length} 本书的阅读数据已匹配到当前路径。书籍原文件未复制。`);
     } catch (error) {
       setOperationError(`恢复备份失败：${String(error)}`);
     } finally {
@@ -613,7 +628,7 @@ export default function HyesReadMaster() {
                 <div className="bg-white/[0.02] border border-white/5 p-8 rounded-[2rem] space-y-5">
                   <div>
                     <h2 className="text-lg font-serif text-white">备份与恢复</h2>
-                    <p className="mt-2 text-sm leading-6 text-zinc-400">备份包含书架索引、阅读位置、书签、标注、统计和目录来源。书籍原文件不包含在备份中；换设备后需重新导入书籍。备份文件含本机路径和目录地址，请妥善保存。</p>
+                    <p className="mt-2 text-sm leading-6 text-zinc-400">备份包含书架索引、阅读位置、书签、标注、统计和目录来源。书籍原文件不包含在备份中；换设备后选择书籍文件夹，可按相对路径恢复匹配的阅读数据。备份文件含本机路径和目录地址，请妥善保存。</p>
                   </div>
                   <div className="flex flex-wrap gap-3">
                     <button type="button" onClick={() => void exportDataBackup()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black hover:bg-orange-400"><Download size={16} />导出备份</button>

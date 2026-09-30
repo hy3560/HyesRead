@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { mapBookPaths } from "../../src/lib/bookPaths";
+import { remapBackupPaths } from "../../src/lib/backupPaths";
 
 function createPdfFixture(pageCount = 1) {
   const objects = [
@@ -77,6 +79,40 @@ function createZipFixture(files: { name: string; data: Buffer }[]) {
   return Buffer.concat([...local, ...central, end]);
 }
 
+test("maps restored library books by relative path and leaves ambiguous matches unmapped", async () => {
+  const mappings = mapBookPaths(
+    "C:\\OldLibrary",
+    "D:\\Books",
+    ["C:\\OldLibrary\\Novel.epub", "C:\\OldLibrary\\Series\\One.epub", "C:\\OldLibrary\\Same.epub"],
+    ["D:\\Books\\novel.EPUB", "D:\\Books\\Series\\One.epub", "D:\\Books\\A\\Same.epub", "D:\\Books\\B\\Same.epub"],
+  );
+  expect(mappings).toEqual([
+    ["C:\\OldLibrary\\Novel.epub", "D:\\Books\\novel.EPUB"],
+    ["C:\\OldLibrary\\Series\\One.epub", "D:\\Books\\Series\\One.epub"],
+  ]);
+});
+
+test("remaps every per-book backup record when a library moves", async () => {
+  const source = "C:\\OldLibrary\\Novel.epub";
+  const target = "D:\\Books\\Novel.epub";
+  const moved = remapBackupPaths({
+    master: { discreteFiles: [source], excludedFiles: [], lastOpenedBook: source, bookAddedAt: { [source]: 123 } },
+    sessions: [{ date: "2026-09-30", duration: 25, bookPath: source }],
+    readerData: {
+      [`hyes-reader-location:${source}`]: JSON.stringify({ fraction: 0.6 }),
+      [`hyes-bookmarks:${source}`]: JSON.stringify([{ id: "mark-1", location: { fraction: 0.6 } }]),
+      [`hyes-highlights:${source}`]: JSON.stringify([{ id: "highlight-1", value: "passage" }]),
+      "hyesread:reader-settings": JSON.stringify({ fontSize: 20 }),
+    },
+  }, [[source, target]]);
+  expect(moved.master).toEqual({ discreteFiles: [target], excludedFiles: [], lastOpenedBook: target, bookAddedAt: { [target]: 123 } });
+  expect(moved.sessions[0].bookPath).toBe(target);
+  expect(JSON.parse(moved.readerData[`hyes-reader-location:${target}`])).toEqual({ fraction: 0.6 });
+  expect(JSON.parse(moved.readerData[`hyes-bookmarks:${target}`])[0].id).toBe("mark-1");
+  expect(JSON.parse(moved.readerData[`hyes-highlights:${target}`])[0].id).toBe("highlight-1");
+  expect(moved.readerData["hyesread:reader-settings"]).toBe(JSON.stringify({ fontSize: 20 }));
+});
+
 test("keeps the empty shelf free of instructional copy", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("button", { name: "添加文件" })).toBeVisible();
@@ -128,7 +164,7 @@ test("exports a backup and merges imported reading data without replacing curren
     mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify(importedBackup)),
   });
-  await expect(page.getByRole("status")).toContainText("备份数据已合并");
+  await expect(page.getByRole("status")).toContainText("备份已恢复");
   const result = await page.evaluate(() => ({
     discrete: JSON.parse(localStorage.getItem("hyes:hyes_master.json") || "{}").discrete_files,
     sessions: JSON.parse(localStorage.getItem("hyes:hyes_stats.json") || "{}").sessions,
