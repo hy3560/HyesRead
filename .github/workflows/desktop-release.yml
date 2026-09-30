@@ -38,8 +38,39 @@ jobs:
           targets: aarch64-linux-android
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+      - name: Configure Android release signing
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ -z "$ANDROID_KEY_BASE64" || -z "$ANDROID_KEY_ALIAS" || -z "$ANDROID_KEY_PASSWORD" || -z "$ANDROID_STORE_PASSWORD" ]]; then
+            echo "Android release signing secrets are not configured; refusing to publish an unsigned APK." >&2
+            exit 1
+          fi
+          key_dir="$RUNNER_TEMP/hyesread-android-signing"
+          mkdir -p "$key_dir"
+          printf '%s' "$ANDROID_KEY_BASE64" | base64 --decode > "$key_dir/release.jks"
+          {
+            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
+            printf 'storeFile=%s\n' "$key_dir/release.jks"
+            printf 'storePassword=%s\n' "$ANDROID_STORE_PASSWORD"
+          } > src-tauri/gen/android/keystore.properties
       - name: Build Android phone APK
         run: pnpm exec tauri android build --apk --target aarch64 --ci
+      - name: Verify Android APK signature
+        run: |
+          set -euo pipefail
+          apk="$(find src-tauri/gen/android/app/build/outputs/apk/universal/release -maxdepth 1 -name '*.apk' -print -quit)"
+          test -n "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk"
+      - name: Remove Android release signing material
+        if: always()
+        run: rm -f src-tauri/gen/android/keystore.properties "$RUNNER_TEMP/hyesread-android-signing/release.jks"
       - name: Publish Android APK to release
         uses: softprops/action-gh-release@v2
         with:
@@ -49,6 +80,7 @@ jobs:
             Android: download the APK and install it on an ARM64 Android phone.
             Windows: download the MSI, install it, and open HyesRead from the Start menu.
           files: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+          overwrite_files: true
 
   windows:
     runs-on: windows-latest
@@ -80,3 +112,4 @@ jobs:
 
             Download the MSI below, install it, and open HyesRead from the Start menu.
           files: src-tauri/target/release/bundle/msi/*.msi
+          overwrite_files: true
