@@ -100,7 +100,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          if ('${{ steps.msi_acceptance.outcome }}' -eq 'failure') {
+          if ('${{ steps.msi_acceptance.outputs.failure_message }}' -ne '') {
             $stage = '${{ steps.msi_acceptance.outputs.failure_stage }}'
             $message = '${{ steps.msi_acceptance.outputs.failure_message }}'
             Write-Output "::error title=HyesRead MSI acceptance failed::$stage - $message"

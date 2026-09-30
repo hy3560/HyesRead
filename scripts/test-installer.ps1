@@ -18,9 +18,10 @@ $stage = 'initialization'
 
 function Write-GitHubFailureSummary([string]$message) {
   $summaryPath = $env:GITHUB_STEP_SUMMARY
-  if (-not $summaryPath) { return }
   $safeMessage = $message -replace '[\r\n]+', ' '
-  Add-Content -LiteralPath $summaryPath -Value "`n### HyesRead MSI acceptance failed`n`n- Stage: ``$stage```n- Error: $safeMessage`n- Install log: ``$installLog```n- Uninstall log: ``$uninstallLog```n"
+  if ($summaryPath) {
+    Add-Content -LiteralPath $summaryPath -Value "`n### HyesRead MSI acceptance failed`n`n- Stage: ``$stage```n- Error: $safeMessage`n- Install log: ``$installLog```n- Uninstall log: ``$uninstallLog```n"
+  }
   $outputPath = $env:GITHUB_OUTPUT
   if ($outputPath) {
     $outputMessage = $safeMessage.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
@@ -101,39 +102,47 @@ try {
   throw
 }
 finally {
-  if ($appProcess) {
-    $appProcess.Refresh()
-    if (-not $appProcess.HasExited) {
-      [void]$appProcess.CloseMainWindow()
-      if (-not $appProcess.WaitForExit(5000)) {
-        Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
-        [void]$appProcess.WaitForExit(5000)
+  try {
+    if ($appProcess) {
+      $appProcess.Refresh()
+      if (-not $appProcess.HasExited) {
+        [void]$appProcess.CloseMainWindow()
+        if (-not $appProcess.WaitForExit(5000)) {
+          Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
+          [void]$appProcess.WaitForExit(5000)
+        }
       }
     }
-  }
 
-  if (-not $productCode) {
-    $entry = Get-HyesReadUninstallEntry
-    if ($entry) { $productCode = [string]$entry.PSChildName }
-  }
-  if ($productCode) {
-    $stage = 'uninstall MSI and check cleanup'
-    Write-Host 'Uninstalling HyesRead and checking cleanup.'
-    $uninstall = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/x', $productCode, '/qn', '/norestart', '/l*v', "`"$uninstallLog`"") -Wait -PassThru
-    if ($uninstall.ExitCode -notin @(0, 3010)) {
-      $details = if (Test-Path -LiteralPath $uninstallLog) { (Get-Content -LiteralPath $uninstallLog -Tail 80) -join "`n" } else { 'No MSI verbose log was created.' }
-      throw "MSI uninstall failed with exit code $($uninstall.ExitCode).`n$details"
+    if (-not $productCode) {
+      $entry = Get-HyesReadUninstallEntry
+      if ($entry) { $productCode = [string]$entry.PSChildName }
     }
-    if ($appPath -and (Test-Path -LiteralPath $appPath)) {
-      throw "The installed executable remains after uninstall: $appPath"
-    }
-    if (Get-HyesReadUninstallEntry) { throw 'HyesRead remains in the Windows uninstall list after uninstall.' }
-    foreach ($extension in @('epub', 'mobi', 'azw3', 'kf8', 'pdf', 'cbz', 'txt', 'md', 'fb2', 'fbz')) {
-      if (Test-Path -LiteralPath "HKLM:\SOFTWARE\Classes\HyesRead.$extension") {
-        throw "The $extension Open with registration remains after uninstall."
+    if ($productCode) {
+      $stage = 'uninstall MSI and check cleanup'
+      Write-Host 'Uninstalling HyesRead and checking cleanup.'
+      $uninstall = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/x', $productCode, '/qn', '/norestart', '/l*v', "`"$uninstallLog`"") -Wait -PassThru
+      if ($uninstall.ExitCode -notin @(0, 3010)) {
+        $details = if (Test-Path -LiteralPath $uninstallLog) { (Get-Content -LiteralPath $uninstallLog -Tail 80) -join "`n" } else { 'No MSI verbose log was created.' }
+        throw "MSI uninstall failed with exit code $($uninstall.ExitCode).`n$details"
       }
+      if ($appPath -and (Test-Path -LiteralPath $appPath)) {
+        throw "The installed executable remains after uninstall: $appPath"
+      }
+      if (Get-HyesReadUninstallEntry) { throw 'HyesRead remains in the Windows uninstall list after uninstall.' }
+      foreach ($extension in @('epub', 'mobi', 'azw3', 'kf8', 'pdf', 'cbz', 'txt', 'md', 'fb2', 'fbz')) {
+        if (Test-Path -LiteralPath "HKLM:\SOFTWARE\Classes\HyesRead.$extension") {
+          throw "The $extension Open with registration remains after uninstall."
+        }
+      }
+      if (Test-Path -LiteralPath $installRegistryKey) { throw 'The HyesRead install registry key remains after uninstall.' }
+      Write-Host 'MSI uninstall and registration cleanup passed.'
     }
-    if (Test-Path -LiteralPath $installRegistryKey) { throw 'The HyesRead install registry key remains after uninstall.' }
-    Write-Host 'MSI uninstall and registration cleanup passed.'
+  } catch {
+    $stage = 'uninstall MSI and check cleanup'
+    $failureMessage = $_.Exception.Message -replace '[\r\n]+', ' '
+    Write-GitHubFailureSummary $failureMessage
+    Write-Output "::error title=HyesRead MSI acceptance failed::$stage - $failureMessage"
+    throw
   }
 }
