@@ -106,6 +106,7 @@ test("opens an uploaded PDF in the bundled reader", async ({ page }) => {
 
   const reader = page.frameLocator("#foliate-reader");
   await expect(reader.locator("foliate-view")).toBeVisible();
+  await expect(page.getByRole("button", { name: "搜索正文" })).toHaveCount(0);
   await expect.poll(() => reader.locator("#progress-slider").getAttribute("title")).toContain("Loc");
   const pdfState = await reader.locator("body").evaluate(() => {
     const host = window as unknown as {
@@ -210,6 +211,7 @@ test("searches EPUB body text and opens a matching passage", async ({ page }) =>
 
   const reader = page.frameLocator("#foliate-reader");
   await expect(reader.locator("foliate-view")).toBeVisible();
+  await expect(page.getByRole("button", { name: "搜索正文" })).toBeVisible();
   await page.getByRole("button", { name: "搜索正文" }).click();
   await reader.getByRole("searchbox", { name: "搜索正文" }).fill("离线 EPUB 阅读路径");
   await reader.getByRole("button", { name: "搜索", exact: true }).click();
@@ -327,6 +329,7 @@ test("opens a multi-page PDF and restores the selected page", async ({ page }) =
 
   const reader = page.frameLocator("#foliate-reader");
   await expect(reader.locator("foliate-view")).toBeVisible();
+  await expect(page.getByRole("button", { name: "搜索正文" })).toHaveCount(0);
   await expect.poll(() => reader.locator("body").evaluate(() => {
     const host = window as unknown as { reader?: { view?: { book?: { sections?: unknown[] } } } };
     return host.reader?.view?.book?.sections?.length;
@@ -360,6 +363,7 @@ test("opens a multi-page CBZ and moves between comic pages", async ({ page }) =>
 
   const reader = page.frameLocator("#foliate-reader");
   await expect(reader.locator("foliate-view")).toBeVisible();
+  await expect(page.getByRole("button", { name: "搜索正文" })).toHaveCount(0);
   await expect.poll(() => reader.locator("body").evaluate(() => {
     const host = window as unknown as { reader?: { view?: { book?: { sections?: unknown[] } } } };
     return host.reader?.view?.book?.sections?.length;
