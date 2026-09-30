@@ -106,7 +106,13 @@ test("opens an uploaded PDF in the bundled reader", async ({ page }) => {
 
   const reader = page.frameLocator("#foliate-reader");
   await expect(reader.locator("foliate-view")).toBeVisible();
-  await expect(page.getByRole("button", { name: "搜索正文" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "搜索正文" })).toBeVisible();
+  await page.getByRole("button", { name: "搜索正文" }).click();
+  await reader.locator("#search-query").fill("acceptance page 1");
+  await reader.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(reader.locator("#search-status")).toHaveText("1 处");
+  await expect(reader.locator(".search-result").first()).toContainText("第 1 页");
+  await reader.locator(".search-result").first().click();
   await expect.poll(() => reader.locator("#progress-slider").getAttribute("title")).toContain("Loc");
   const pdfState = await reader.locator("body").evaluate(() => {
     const host = window as unknown as {

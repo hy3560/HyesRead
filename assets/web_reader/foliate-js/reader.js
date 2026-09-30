@@ -245,6 +245,27 @@ class Reader {
         const matches = []
         try {
             this.view.clearSearch()
+            if (this.view.book.searchText) {
+                const pdfMatches = await this.view.book.searchText(query)
+                if (requestId !== this.searchRequestId) return
+                for (const item of pdfMatches) {
+                    const before = item.text.slice(Math.max(0, item.start - 40), item.start)
+                    const match = item.text.slice(item.start, item.start + item.length)
+                    const after = item.text.slice(item.start + item.length, item.start + item.length + 80)
+                    const button = document.createElement('button')
+                    button.type = 'button'
+                    button.className = 'search-result'
+                    button.append(document.createTextNode(`第 ${item.index + 1} 页 · ${before}`))
+                    const mark = document.createElement('mark')
+                    mark.textContent = match
+                    button.append(mark, document.createTextNode(after))
+                    button.addEventListener('click', () => this.view.goTo(JSON.stringify({ pageIndex: item.index })))
+                    results.append(button)
+                }
+                status.textContent = `${pdfMatches.length} 处`
+                if (!pdfMatches.length) status.textContent = '未找到'
+                return
+            }
             for await (const item of this.view.search({ query, matchCase: false })) {
                 if (requestId !== this.searchRequestId) break
                 if (typeof item.progress === 'number') {

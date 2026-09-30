@@ -127,6 +127,24 @@ export const makePDF = async file => {
     }).promise
 
     const book = { rendition: { layout: 'pre-paginated' } }
+    book.searchText = async query => {
+        const normalizedQuery = query.toLocaleLowerCase()
+        if (!normalizedQuery) return []
+        const results = []
+        for (let index = 0; index < pdf.numPages; index++) {
+            const page = await pdf.getPage(index + 1)
+            const { items } = await page.getTextContent()
+            const text = items.map(item => item.str).join(' ')
+            const normalized = text.toLocaleLowerCase()
+            let start = 0
+            while ((start = normalized.indexOf(normalizedQuery, start)) !== -1) {
+                results.push({ index, text, start, length: query.length })
+                start += Math.max(1, query.length)
+                if (results.length >= 500) return results
+            }
+        }
+        return results
+    }
 
     const { metadata, info } = await pdf.getMetadata() ?? {}
     // TODO: for better results, parse `metadata.getRaw()`
@@ -161,6 +179,7 @@ export const makePDF = async file => {
     book.isExternal = uri => /^\w+:/i.test(uri)
     book.resolveHref = async href => {
         const parsed = JSON.parse(href)
+        if (Number.isInteger(parsed?.pageIndex)) return { index: parsed.pageIndex }
         const dest = typeof parsed === 'string'
             ? await pdf.getDestination(parsed) : parsed
         const index = await pdf.getPageIndex(dest[0])
