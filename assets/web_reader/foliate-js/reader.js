@@ -195,22 +195,24 @@ class Reader {
                     this.annotationsByValue.set(value, annotation)
                 }
             }
-            this.view.addEventListener('create-overlay', e => {
-                const { index } = e.detail
-                const list = this.annotations.get(index)
-                if (list) for (const annotation of list)
-                    this.view.addAnnotation(annotation)
-            })
-            this.view.addEventListener('draw-annotation', e => {
-                const { draw, annotation } = e.detail
-                const { color } = annotation
-                draw(Overlayer.highlight, { color })
-            })
-            this.view.addEventListener('show-annotation', e => {
-                const annotation = this.annotationsByValue.get(e.detail.value)
-                if (annotation.note) alert(annotation.note)
-            })
         }
+        this.view.addEventListener('create-overlay', e => {
+            const { index } = e.detail
+            const list = this.annotations.get(index)
+            if (list) for (const annotation of list)
+                this.view.addAnnotation(annotation)
+        })
+        this.view.addEventListener('draw-annotation', e => {
+            const { draw, annotation } = e.detail
+            draw(Overlayer.highlight, { color: annotation.color || '#facc15' })
+        })
+        this.view.addEventListener('show-annotation', e => {
+            const annotation = this.annotationsByValue.get(e.detail.value)
+            if (annotation) parent.postMessage({
+                type: 'hyesread:annotation-open',
+                annotation: { value: annotation.value, text: annotation.note || '' },
+            }, '*')
+        })
     }
     applyStyles() {
         const themes = {
@@ -281,8 +283,37 @@ class Reader {
         if (k === 'ArrowLeft' || k === 'h') this.view.goLeft()
         else if(k === 'ArrowRight' || k === 'l') this.view.goRight()
     }
-    #onLoad({ detail: { doc } }) {
+    async addAnnotation(annotation) {
+        const { index } = await this.view.addAnnotation(annotation)
+        const list = this.annotations.get(index) ?? []
+        if (!list.some(item => item.value === annotation.value)) list.push(annotation)
+        this.annotations.set(index, list)
+        this.annotationsByValue.set(annotation.value, annotation)
+        parent.postMessage({ type: 'hyesread:annotation-added', value: annotation.value }, '*')
+    }
+    async removeAnnotation(value) {
+        const annotation = this.annotationsByValue.get(value)
+        if (!annotation) return
+        await this.view.deleteAnnotation(annotation)
+        this.annotationsByValue.delete(value)
+        for (const [index, list] of this.annotations)
+            this.annotations.set(index, list.filter(item => item.value !== value))
+    }
+    #onLoad({ detail: { doc, index } }) {
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
+        const reportSelection = () => {
+            const selection = doc.getSelection()
+            if (!selection || selection.isCollapsed || !selection.toString().trim()) return
+            try {
+                parent.postMessage({
+                    type: 'hyesread:selection',
+                    selection: { value: this.view.getCFI(index, selection.getRangeAt(0)), text: selection.toString().trim() },
+                }, '*')
+            } catch (error) { console.error('Could not capture selected passage', error) }
+        }
+        doc.addEventListener('selectionchange', reportSelection)
+        doc.addEventListener('mouseup', reportSelection)
+        doc.addEventListener('keyup', reportSelection)
     }
     #onRelocate({ detail }) {
         const { fraction, location, tocItem, pageItem } = detail
@@ -352,6 +383,24 @@ addEventListener('message', event => {
         open(event.data.file).catch(showError)
     if (event.data.type === 'hyesread:restore' && event.data.location?.fraction != null)
         globalThis.reader?.view?.goToFraction(event.data.location.fraction).catch(console.error)
+    if (event.data.type === 'hyesread:annotations' && Array.isArray(event.data.annotations)) {
+        const current = globalThis.reader
+        if (!current?.view) return
+        for (const annotation of event.data.annotations)
+            current.addAnnotation(annotation).catch(error => parent.postMessage({
+                type: 'hyesread:annotation-error', value: annotation.value, message: error?.message || String(error),
+            }, '*'))
+    }
+    if (event.data.type === 'hyesread:add-annotation' && event.data.annotation)
+        globalThis.reader?.addAnnotation(event.data.annotation).catch(error => parent.postMessage({
+            type: 'hyesread:annotation-error', value: event.data.annotation.value, message: error?.message || String(error),
+        }, '*'))
+    if (event.data.type === 'hyesread:remove-annotation' && typeof event.data.value === 'string')
+        globalThis.reader?.removeAnnotation(event.data.value).catch(error => parent.postMessage({
+            type: 'hyesread:annotation-error', value: event.data.value, message: error?.message || String(error),
+        }, '*'))
+    if (event.data.type === 'hyesread:show-annotation' && typeof event.data.value === 'string')
+        globalThis.reader?.view?.showAnnotation({ value: event.data.value }).catch(console.error)
     if (event.data.type === 'hyesread:toggle-settings') {
         $('#reader-search').classList.remove('show')
         $('#reader-settings').classList.toggle('show')
