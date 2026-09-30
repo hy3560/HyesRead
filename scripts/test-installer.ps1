@@ -89,7 +89,9 @@ try {
 
   Write-Host 'Installed MSI, executable, window startup, and EPUB Open with registration passed.'
 } catch {
-  Write-GitHubFailureSummary $_.Exception.Message
+  $failureMessage = $_.Exception.Message -replace '[\r\n]+', ' '
+  Write-GitHubFailureSummary $failureMessage
+  Write-Output "::error title=HyesRead MSI acceptance failed::$failureMessage"
   throw
 }
 finally {
