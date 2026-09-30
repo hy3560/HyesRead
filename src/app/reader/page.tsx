@@ -69,38 +69,72 @@ function ReaderContent() {
       setBookmarks([]);
       setCurrentLocation(null);
     }
-    let lastCheckAt = Date.now();
-    let unrecordedMs = 0;
+    let lastCheckAt = 0;
+    let isReading = false;
+    let isVisible = document.visibilityState === "visible";
+    const pendingReadingMs = new Map<string, number>();
     let flushQueue = Promise.resolve();
-    const flushReadingTime = (assumeVisible = false) => {
-      const now = Date.now();
-      if (assumeVisible || document.visibilityState === "visible") unrecordedMs += Math.max(0, now - lastCheckAt);
+    const dateKey = (timestamp: number) => {
+      const date = new Date(timestamp);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    };
+    const collectReadingTime = (now: number) => {
+      if (isReading && isVisible && lastCheckAt > 0 && now > lastCheckAt) {
+        let cursor = lastCheckAt;
+        while (cursor < now) {
+          const nextDay = new Date(cursor);
+          nextDay.setHours(24, 0, 0, 0);
+          const segmentEnd = Math.min(now, nextDay.getTime());
+          const day = dateKey(cursor);
+          pendingReadingMs.set(day, (pendingReadingMs.get(day) || 0) + segmentEnd - cursor);
+          cursor = segmentEnd;
+        }
+      }
       lastCheckAt = now;
-      const minutes = Math.floor(unrecordedMs / 60_000);
-      if (minutes < 1) return;
-      unrecordedMs -= minutes * 60_000;
+    };
+    const flushReadingTime = () => {
+      const now = Date.now();
+      collectReadingTime(now);
+      if (!pendingReadingMs.size) return flushQueue;
+      const pending = Array.from(pendingReadingMs);
+      pendingReadingMs.clear();
       flushQueue = flushQueue.then(async () => {
-          const date = new Date();
-          const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-          await updateValue<{ date: string; duration: number; bookPath: string }[]>("hyes_stats.json", "sessions", [], sessions => {
-            const last = sessions[sessions.length - 1];
-            if (last?.date === day && last.bookPath === path) last.duration += minutes;
-            else sessions.push({ date: day, duration: minutes, bookPath: path });
-            return sessions;
-          });
+          for (const [day, elapsedMs] of pending) {
+            const minutes = Math.round((elapsedMs / 60_000) * 10_000) / 10_000;
+            if (minutes <= 0) continue;
+            await updateValue<{ date: string; duration: number; bookPath: string }[]>("hyes_stats.json", "sessions", [], sessions => {
+              const existing = sessions.find(session => session.date === day && session.bookPath === path);
+              if (existing) existing.duration += minutes;
+              else sessions.push({ date: day, duration: minutes, bookPath: path });
+              return sessions;
+            });
+          }
         }).catch(error => {
-          unrecordedMs += minutes * 60_000;
+          for (const [day, elapsedMs] of pending) pendingReadingMs.set(day, (pendingReadingMs.get(day) || 0) + elapsedMs);
           console.error("保存阅读时长失败", error);
         });
+      return flushQueue;
     };
-    reportTime = () => flushReadingTime();
+    const startReadingTimer = () => {
+      if (isReading) return;
+      isReading = true;
+      isVisible = document.visibilityState === "visible";
+      lastCheckAt = Date.now();
+      timer = setInterval(() => { void flushReadingTime(); }, 15_000);
+    };
+    reportTime = () => { void flushReadingTime(); };
     const handleVisibilityChange = () => {
-      const wasVisible = document.visibilityState === "hidden";
-      flushReadingTime(wasVisible);
+      if (document.visibilityState === "hidden") {
+        collectReadingTime(Date.now());
+        isVisible = false;
+      } else {
+        lastCheckAt = Date.now();
+        isVisible = true;
+      }
+      void flushReadingTime();
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("pagehide", reportTime);
-    timer = setInterval(reportTime, 60_000);
     let cancelled = false;
     void (async () => {
     const browserBook = isBrowserBook(path) ? await getBrowserBook(path) : undefined;
@@ -154,6 +188,7 @@ function ReaderContent() {
             }, { passive: true });
             reportLocation();
             setTextReady(true);
+            startReadingTimer();
           }, { once: true });
           frame.srcdoc = `<meta charset="utf-8"><style>html,body{height:100%;margin:0}body{box-sizing:border-box;max-width:46rem;margin:0 auto;padding:3rem 2rem 5rem;color:#27272a;background:#fff;font:18px/1.9 system-ui;white-space:pre-wrap;overflow-wrap:anywhere;overflow-y:auto}article{min-height:100%}</style><article></article>`;
         } catch (e) { setError(`无法读取文本：${e}`); }
@@ -174,6 +209,7 @@ function ReaderContent() {
         }
       } else if (event.data?.type === "hyesread:ready") {
         setReaderReady(true);
+        startReadingTimer();
         let saved = null;
         try { saved = JSON.parse(localStorage.getItem(key) || "null"); } catch { saved = null; }
         frame.contentWindow?.postMessage({ type: "hyesread:restore", location: saved }, "*");
