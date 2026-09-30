@@ -586,7 +586,22 @@ try {
     buffer: Buffer.from(JSON.stringify(portableBackup)),
   });
   log("waiting for the browser-book backup import to finish");
-  await shelfPage.getByRole("status").filter({ hasText: "恢复 2 本浏览器书籍" }).waitFor({ state: "visible", timeout: 30_000 });
+  const restoreSuccess = shelfPage.getByRole("status").filter({ hasText: "恢复 2 本浏览器书籍" });
+  const restoreDeadline = Date.now() + 90_000;
+  let restoreError = "";
+  while (Date.now() < restoreDeadline) {
+    if (await restoreSuccess.isVisible().catch(() => false)) break;
+    restoreError = await shelfPage.getByRole("alert").innerText().catch(() => "");
+    if (restoreError) break;
+    await delay(250);
+  }
+  if (!(await restoreSuccess.isVisible().catch(() => false))) {
+    const restoreDiagnostics = await shelfPage.evaluate(() => ({
+      status: Array.from(document.querySelectorAll('[role="status"]'), element => element.textContent?.trim()).filter(Boolean),
+      alerts: Array.from(document.querySelectorAll('[role="alert"]'), element => element.textContent?.trim()).filter(Boolean),
+    }));
+    throw new Error(`Desktop browser-book backup import did not finish successfully. ${JSON.stringify({ restoreError, restoreDiagnostics, runtimeErrors: failures })}`);
+  }
   log("confirming both restored books appear on the shelf");
   await shelfPage.getByRole("button", { name: "书架" }).click();
   await shelfPage.getByRole("button", { name: "打开《native-portable-epub》" }).waitFor({ state: "visible", timeout: 30_000 });
