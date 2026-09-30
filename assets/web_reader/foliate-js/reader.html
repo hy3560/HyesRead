@@ -94,6 +94,50 @@ body {
     margin: 0 12px;
     visibility: hidden;
 }
+#reader-settings {
+    position: absolute;
+    z-index: 3;
+    top: 54px;
+    right: 10px;
+    display: none;
+    width: min(300px, calc(100vw - 24px));
+    padding: 16px;
+    border: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+    border-radius: 12px;
+    background: Canvas;
+    color: CanvasText;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, .2);
+}
+#reader-search {
+    position: absolute;
+    z-index: 3;
+    top: 54px;
+    right: 10px;
+    display: none;
+    width: min(380px, calc(100vw - 24px));
+    max-height: min(65vh, 560px);
+    padding: 14px;
+    border: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+    border-radius: 12px;
+    background: Canvas;
+    color: CanvasText;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, .2);
+}
+#reader-search.show { display: flex; flex-direction: column; gap: 10px; }
+#search-form { display: flex; gap: 8px; }
+#search-query { min-width: 0; flex: 1; padding: 8px 10px; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 7px; background: Canvas; color: CanvasText; }
+#search-form button { padding: 8px 12px; border-radius: 7px; background: color-mix(in srgb, CanvasText 8%, transparent); color: CanvasText; }
+#search-status { min-height: 18px; color: GrayText; font-size: 12px; }
+#search-results { min-height: 0; overflow-y: auto; display: grid; gap: 6px; }
+.search-result { padding: 9px 10px; border-radius: 7px; text-align: left; line-height: 1.5; background: color-mix(in srgb, CanvasText 5%, transparent); color: CanvasText; }
+.search-result:hover { background: color-mix(in srgb, CanvasText 10%, transparent); }
+.search-result mark { background: #f0c96d; color: #282318; }
+#reader-settings.show { display: grid; gap: 14px; }
+.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.setting-row label { font-size: 14px; }
+.setting-row select, .setting-row input { accent-color: #e86d30; }
+.setting-row select { max-width: 160px; padding: 6px 8px; border-radius: 6px; background: Canvas; color: CanvasText; }
+.setting-row input[type="range"] { width: 128px; }
 #side-bar {
     visibility: hidden;
     box-sizing: border-box;
@@ -308,4 +352,18 @@ body {
         </svg>
     </button>
 </div>
+<section id="reader-settings" aria-label="阅读设置">
+    <div class="setting-row"><label for="font-size">字号</label><input id="font-size" type="range" min="14" max="32" step="1" value="18"></div>
+    <div class="setting-row"><label for="line-spacing">行距</label><input id="line-spacing" type="range" min="1.2" max="2.2" step="0.1" value="1.4"></div>
+    <div class="setting-row"><label for="reading-flow">翻页方式</label><select id="reading-flow"><option value="paginated">分页</option><option value="scrolled">滚动</option></select></div>
+    <div class="setting-row"><label for="reading-theme">背景</label><select id="reading-theme"><option value="light">浅色</option><option value="sepia">护眼</option><option value="dark">深色</option></select></div>
+</section>
+<section id="reader-search" aria-label="正文搜索">
+    <form id="search-form">
+        <input id="search-query" type="search" aria-label="搜索正文">
+        <button type="submit">搜索</button>
+    </form>
+    <div id="search-status" aria-live="polite"></div>
+    <div id="search-results"></div>
+</section>
 <script src="reader.js" type="module"></script>

@@ -224,6 +224,39 @@ try {
   const progress = await readerFrame.locator("#progress-slider").getAttribute("title");
   if (!progress?.includes("Loc")) throw new Error("The EPUB location controls did not initialize in WebView2.");
 
+  log("checking EPUB search, settings, and bookmarks in WebView2");
+  await page.getByRole("button", { name: "阅读设置" }).waitFor({ state: "visible", timeout: 10_000 });
+  await page.getByRole("button", { name: "阅读设置" }).click();
+  await readerFrame.locator("#reading-theme").selectOption("sepia");
+  await readerFrame.locator("#reading-flow").selectOption("scrolled");
+  await readerFrame.locator("#font-size").evaluate(element => {
+    const input = element;
+    input.value = "24";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const nativeSettings = await readerFrame.evaluate(() => ({
+    settings: JSON.parse(localStorage.getItem("hyesread:reader-settings") || "{}"),
+    flow: window.reader?.view?.renderer?.getAttribute("flow"),
+  }));
+  if (nativeSettings.settings?.style?.theme !== "sepia" || nativeSettings.settings?.style?.fontSize !== 24 || nativeSettings.flow !== "scrolled") {
+    throw new Error(`WebView2 did not save and apply reader settings: ${JSON.stringify(nativeSettings)}`);
+  }
+
+  await page.getByRole("button", { name: "搜索正文" }).click();
+  await readerFrame.locator("#search-query").fill("离线 EPUB 阅读路径");
+  await readerFrame.getByRole("button", { name: "搜索", exact: true }).click();
+  const searchDeadline = Date.now() + 10_000;
+  while (Date.now() < searchDeadline && await readerFrame.locator("#search-status").innerText() !== "1 处") await delay(100);
+  const searchResult = await readerFrame.locator(".search-result").first().innerText().catch(() => "");
+  if (!searchResult.includes("离线 EPUB 阅读路径")) throw new Error(`WebView2 EPUB search did not find the passage: ${searchResult}`);
+
+  await page.getByRole("button", { name: "添加或移除当前书签" }).click();
+  const bookmarkCount = await page.evaluate(() => {
+    const entry = Object.entries(localStorage).find(([key]) => key.startsWith("hyes-bookmarks:"));
+    return entry ? JSON.parse(entry[1]).length : 0;
+  });
+  if (bookmarkCount !== 1) throw new Error(`WebView2 did not persist the EPUB bookmark: ${bookmarkCount}`);
+
   log("checking PDF and second-instance forwarding");
   secondLaunch = spawn(executable, [pdfFixture], { cwd: projectRoot, stdio: "ignore", env: appEnvironment });
   const secondExitCode = await Promise.race([
@@ -262,7 +295,7 @@ try {
   }
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 
-  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, pdfPageRendered: true, secondLaunchForwarded: true }));
+  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, readerSettings: true, bookmarks: true, pdfPageRendered: true, secondLaunchForwarded: true }));
 } finally {
   if (browser) await browser.close().catch(() => undefined);
   for (const child of [secondLaunch, app]) {

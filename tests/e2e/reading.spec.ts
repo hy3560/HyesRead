@@ -103,6 +103,102 @@ test("adds, opens, and restores a local EPUB", async ({ page }) => {
   expect(runtimeErrors).toEqual([]);
 });
 
+test("saves EPUB reading layout and appearance settings", async ({ page }) => {
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles(resolve("tests/fixtures/hyesread-acceptance.epub"));
+  await page.getByRole("button", { name: "打开《hyesread-acceptance》" }).click();
+
+  const reader = page.frameLocator("#foliate-reader");
+  await expect(reader.locator("foliate-view")).toBeVisible();
+  await page.getByRole("button", { name: "阅读设置" }).click();
+  await expect(reader.getByRole("region", { name: "阅读设置" })).toBeVisible();
+  await reader.locator("#reading-theme").selectOption("sepia");
+  await reader.locator("#reading-flow").selectOption("scrolled");
+  await reader.locator("#font-size").evaluate(element => {
+    const input = element as HTMLInputElement;
+    input.value = "24";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  const saved = await reader.locator("body").evaluate(() => {
+    const frame = Array.from(document.querySelectorAll("iframe")).find(item => item.contentDocument?.body);
+    const settings = JSON.parse(localStorage.getItem("hyesread:reader-settings") || "{}");
+    return {
+      theme: settings.style?.theme,
+      fontSize: settings.style?.fontSize,
+      chapterColor: frame?.contentDocument?.body ? getComputedStyle(frame.contentDocument.body).color : "",
+    };
+  });
+  expect(saved).toMatchObject({ theme: "sepia", fontSize: 24 });
+  await expect.poll(() => reader.locator("body").evaluate(() => {
+    const host = window as unknown as { reader?: { view?: { renderer?: Element } } };
+    return host.reader?.view?.renderer?.getAttribute("flow");
+  })).toBe("scrolled");
+  await expect.poll(() => reader.locator("body").evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe("rgb(244, 236, 216)");
+  await page.reload();
+  const restoredReader = page.frameLocator("#foliate-reader");
+  await expect(restoredReader.locator("foliate-view")).toBeVisible();
+  await expect(restoredReader.locator("#font-size")).toHaveValue("24");
+  await expect(restoredReader.locator("#reading-theme")).toHaveValue("sepia");
+  await expect.poll(() => restoredReader.locator("body").evaluate(() => {
+    const host = window as unknown as { reader?: { view?: { renderer?: Element } } };
+    return host.reader?.view?.renderer?.getAttribute("flow");
+  })).toBe("scrolled");
+});
+
+test("searches EPUB body text and opens a matching passage", async ({ page }) => {
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles(resolve("tests/fixtures/hyesread-acceptance.epub"));
+  await page.getByRole("button", { name: "打开《hyesread-acceptance》" }).click();
+
+  const reader = page.frameLocator("#foliate-reader");
+  await expect(reader.locator("foliate-view")).toBeVisible();
+  await page.getByRole("button", { name: "搜索正文" }).click();
+  await reader.getByRole("searchbox", { name: "搜索正文" }).fill("离线 EPUB 阅读路径");
+  await reader.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(reader.locator("#search-status")).toHaveText("1 处", { timeout: 10_000 });
+  await expect(reader.locator(".search-result")).toContainText("离线 EPUB 阅读路径");
+  await reader.locator(".search-result").click();
+  await expect.poll(() => reader.locator("#progress-slider").getAttribute("title")).toContain("Loc");
+});
+
+test("saves, restores, and removes EPUB bookmarks", async ({ page }) => {
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles(resolve("tests/fixtures/hyesread-acceptance.epub"));
+  await page.getByRole("button", { name: "打开《hyesread-acceptance》" }).click();
+
+  const reader = page.frameLocator("#foliate-reader");
+  await expect(reader.locator("foliate-view")).toBeVisible();
+  const addBookmark = page.getByRole("button", { name: "添加或移除当前书签" });
+  await expect(addBookmark).toBeEnabled();
+  await addBookmark.click();
+  await expect(addBookmark).toHaveText("已标记");
+  const bookmarkData = await page.evaluate(() => {
+    const entry = Object.entries(localStorage).find(([key]) => key.startsWith("hyes-bookmarks:"));
+    return entry ? JSON.parse(entry[1]) as { id: string }[] : [];
+  });
+  expect(bookmarkData).toHaveLength(1);
+
+  await page.reload();
+  const restoredReader = page.frameLocator("#foliate-reader");
+  await expect(restoredReader.locator("foliate-view")).toBeVisible();
+  await expect(page.getByRole("button", { name: "添加或移除当前书签" })).toHaveText("已标记");
+  await page.getByRole("button", { name: "打开书签列表" }).click();
+  await expect(page.getByRole("region", { name: "书签列表" })).toContainText("%");
+  await page.getByRole("button", { name: /删除书签/ }).click();
+  await expect(page.getByRole("button", { name: "打开书签列表" })).toHaveText("0");
+  await expect(addBookmark).not.toHaveText("已标记");
+});
+
 test("keeps uploaded text on the shelf after reload and reads Chinese text", async ({ page }) => {
   const runtimeErrors: string[] = [];
   page.on("pageerror", error => runtimeErrors.push(error.message));
