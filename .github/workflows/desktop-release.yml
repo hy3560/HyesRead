@@ -25,6 +25,12 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build Windows installer
         run: pnpm tauri build --bundles msi
+      - name: Install, launch, and uninstall the Windows MSI
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem 'src-tauri/target/release/bundle/msi/*.msi' | Select-Object -First 1
+          if (-not $msi) { throw 'The Windows MSI was not produced.' }
+          ./scripts/test-installer.ps1 -MsiPath $msi.FullName
       - name: Publish release with installer
         uses: softprops/action-gh-release@v2
         with:

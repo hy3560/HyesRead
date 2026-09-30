@@ -88,3 +88,9 @@ jobs:
           if (-not $runtimeVersion) { throw 'WebView2 Runtime is unavailable after installation.' }
           Write-Host "WebView2 Runtime: $runtimeVersion"
       - run: pnpm test:native
+      - name: Install, launch, and uninstall the Windows MSI
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem 'src-tauri/target/release/bundle/msi/*.msi' | Select-Object -First 1
+          if (-not $msi) { throw 'The Windows MSI was not produced.' }
+          ./scripts/test-installer.ps1 -MsiPath $msi.FullName
