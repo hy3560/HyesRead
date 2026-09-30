@@ -1,4 +1,5 @@
 import { chromium } from "@playwright/test";
+import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { access, copyFile, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -544,9 +545,59 @@ try {
   }
   await shelfPage.getByRole("button", { name: "← 返回书库" }).click();
   await shelfPage.getByRole("button", { name: "打开《hyesread-native-acceptance》" }).waitFor({ state: "visible", timeout: 10_000 });
+
+  log("checking browser-book backup restore and reading in the desktop app");
+  const portableEpubPath = "browser-book:native-portable-epub";
+  const portableTextPath = "browser-book:native-portable-text";
+  const textBytes = Buffer.from("桌面端恢复的浏览器书籍可以继续阅读。", "utf8");
+  const portableBackup = {
+    format: "hyesread-backup",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    master: { libraryPath: "", discreteFiles: [portableEpubPath, portableTextPath], excludedFiles: [], lastOpenedBook: "", bookAddedAt: {} },
+    sessions: [],
+    catalogs: [],
+    readerData: {},
+    browserBooks: [
+      { id: portableEpubPath, name: "native-portable-epub.epub", type: "application/epub+zip", data: epubBytes.toString("base64"), sha256: createHash("sha256").update(epubBytes).digest("hex") },
+      { id: portableTextPath, name: "native-portable-text.txt", type: "text/plain", data: textBytes.toString("base64"), sha256: createHash("sha256").update(textBytes).digest("hex") },
+    ],
+  };
+  await shelfPage.getByRole("button", { name: "设置" }).click();
+  await shelfPage.getByRole("button", { name: "导入并合并" }).click();
+  await shelfPage.locator('input[aria-label="选择 HyesRead 备份文件"]').setInputFiles({
+    name: "hyesread-native-portable-backup.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(portableBackup)),
+  });
+  await shelfPage.getByRole("status").filter({ hasText: "恢复 2 本浏览器书籍" }).waitFor({ state: "visible", timeout: 15_000 });
+  await shelfPage.getByRole("button", { name: "书架" }).click();
+  await shelfPage.getByRole("button", { name: "打开《native-portable-epub》" }).waitFor({ state: "visible", timeout: 15_000 });
+  await shelfPage.getByRole("button", { name: "打开《native-portable-epub》" }).click();
+  await shelfPage.waitForURL(url => url.href.includes(encodeURIComponent(portableEpubPath)), { timeout: 15_000 });
+  const portableReader = shelfPage.frameLocator("#foliate-reader");
+  await portableReader.locator("foliate-view").waitFor({ state: "visible", timeout: 30_000 });
+  let portableChapterText = "";
+  const portableChapterDeadline = Date.now() + 15_000;
+  while (Date.now() < portableChapterDeadline && !portableChapterText.includes("离线 EPUB 阅读路径")) {
+    const chapterFrame = shelfPage.frames().find(frame => frame.url().startsWith("blob:"));
+    if (chapterFrame) portableChapterText = await chapterFrame.locator("body").innerText().catch(() => "");
+    if (!portableChapterText.includes("离线 EPUB 阅读路径")) await delay(100);
+  }
+  if (!portableChapterText.includes("离线 EPUB 阅读路径")) {
+    throw new Error(`The restored browser EPUB did not render in the Windows desktop reader: ${JSON.stringify({ text: portableChapterText, frames: shelfPage.frames().map(frame => frame.url()), errors: await shelfPage.locator('[role="alert"].mb-5').allTextContents() })}`);
+  }
+  await shelfPage.getByRole("button", { name: "← 返回书库" }).click();
+  await shelfPage.getByRole("button", { name: "打开《native-portable-text》" }).waitFor({ state: "visible", timeout: 10_000 });
+  await shelfPage.getByRole("button", { name: "打开《native-portable-text》" }).click();
+  await shelfPage.waitForURL(url => url.href.includes(encodeURIComponent(portableTextPath)), { timeout: 15_000 });
+  await shelfPage.frameLocator("#foliate-reader").locator("article").getByText("桌面端恢复的浏览器书籍可以继续阅读。", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await shelfPage.getByRole("button", { name: "← 返回书库" }).click();
+  await shelfPage.getByRole("button", { name: "打开《native-portable-epub》" }).waitFor({ state: "visible", timeout: 10_000 });
+
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 
-  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, opdsNavigation: true, opdsPagination: true, pdfPageRendered: true, pdfSearch: true, pdfHighlight: true, pdfHighlightRestore: true, shelfRemovalPersists: true, sourceFilePreserved: true, secondLaunchForwarded: true }));
+  log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, opdsNavigation: true, opdsPagination: true, pdfPageRendered: true, pdfSearch: true, pdfHighlight: true, pdfHighlightRestore: true, portableEpubRestore: true, portableTextRestore: true, shelfRemovalPersists: true, sourceFilePreserved: true, secondLaunchForwarded: true }));
 } finally {
   if (catalogServer) await new Promise(resolvePromise => catalogServer.close(resolvePromise));
   if (browser) await browser.close().catch(() => undefined);

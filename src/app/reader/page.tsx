@@ -145,9 +145,9 @@ function ReaderContent() {
     if (ext === "txt" || ext === "md") {
       const loadText = async () => {
         try {
-          const text = isDesktop()
-            ? await invoke<string>("read_text_book", { path })
-            : browserBook ? await browserBook.text() : await fetch(path).then(response => response.text());
+          const text = browserBook
+            ? await browserBook.text()
+            : isDesktop() ? await invoke<string>("read_text_book", { path }) : await fetch(path).then(response => response.text());
           frame.addEventListener("load", () => {
             const article = frame.contentDocument?.querySelector("article");
             const textWindow = frame.contentWindow;
@@ -197,7 +197,7 @@ function ReaderContent() {
       return;
     }
     const source = new URL("assets/web_reader/foliate-js/reader.html", document.baseURI);
-    if (isDesktop()) source.searchParams.set("url", convertFileSrc(path));
+    if (isDesktop() && !browserBook) source.searchParams.set("url", convertFileSrc(path));
     onMessage = (event: MessageEvent) => {
       if (event.source !== frame.contentWindow) return;
       if (event.data?.type === "hyesread:relocate") {

@@ -28,6 +28,42 @@ export async function saveBrowserBook(id: string, file: File) {
   await withBook("readwrite", id, store => store.put(file, id));
 }
 
+export async function saveBrowserBooks(books: { id: string; name: string; type: string; data: string }[]) {
+  if (!books.length) return;
+  const database = await openDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(STORE, "readwrite");
+    let settled = false;
+    const fail = (error: DOMException | Error | null) => {
+      if (settled) return;
+      settled = true;
+      database.close();
+      reject(error || new Error("无法保存书籍文件"));
+    };
+    transaction.oncomplete = () => {
+      if (settled) return;
+      settled = true;
+      database.close();
+      resolve();
+    };
+    transaction.onerror = () => fail(transaction.error);
+    transaction.onabort = () => fail(transaction.error);
+    try {
+      const store = transaction.objectStore(STORE);
+      for (const book of books) {
+        const binary = atob(book.data);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+        const content = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+        store.put(new File([content], book.name, { type: book.type }), book.id);
+      }
+    } catch (error) {
+      try { transaction.abort(); } catch {}
+      fail(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
 export async function getBrowserBook(id: string): Promise<File | undefined> {
   return withBook("readonly", id, store => store.get(id));
 }

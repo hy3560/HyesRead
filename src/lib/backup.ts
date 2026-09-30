@@ -2,7 +2,7 @@ import { invoke, readValue, updateValue, writeValue } from "./platform";
 import type { BookAddedAt } from "./bookOrder";
 import { mapBookPaths } from "./bookPaths";
 import { remapBackupPaths } from "./backupPaths";
-import { isBrowserBook, listBrowserBooks, saveBrowserBook } from "./browserBooks";
+import { isBrowserBook, listBrowserBooks, saveBrowserBooks } from "./browserBooks";
 
 const FORMAT = "hyesread-backup";
 const VERSION = 1;
@@ -258,13 +258,8 @@ export async function restoreBackup(text: string, selectedLibraryPath = ""): Pro
   const remappedBackup = remapBackupPaths(backup, bookPathMappings);
 
   const restoredBrowserPaths: string[] = [];
-  for (const book of backup.browserBooks || []) {
-    const bytes = base64ToBytes(book.data);
-    const blob = new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer], { type: book.type });
-    const file = new File([blob], book.name, { type: book.type });
-    await saveBrowserBook(book.id, file);
-    restoredBrowserPaths.push(book.id);
-  }
+  await saveBrowserBooks(backup.browserBooks || []);
+  restoredBrowserPaths.push(...(backup.browserBooks || []).map(book => book.id));
 
   const [existingDiscrete, existingExcluded] = await Promise.all([
     readValue<string[]>("hyes_master.json", "discrete_files", []),
