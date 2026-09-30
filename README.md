@@ -23,7 +23,7 @@ HyesRead 是一款把书架、阅读进度和阅读统计保存在本机的电�
 
 ### Android 安装版
 
-在 [GitHub Releases](https://github.com/hy3560/HyesRead/releases/latest) 下载 Android ARM64 APK 并安装。大多数近年的 Android 手机使用 ARM64；首次从 GitHub 安装时，按系统提示允许浏览器安装应用。
+Android ARM64 安装包会发布在 [GitHub Releases](https://github.com/hy3560/HyesRead/releases/latest)。当前 Release 尚未提供 APK；签名密钥配置并完成验收后才会发布。多数近年的 Android 手机使用 ARM64。签名流程见[Android 发布说明](docs/android-release.md)。
 
 ### 浏览器版
 
