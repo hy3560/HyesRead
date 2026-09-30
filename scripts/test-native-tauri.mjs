@@ -580,11 +580,28 @@ try {
   };
   await shelfPage.getByRole("button", { name: "设置" }).click();
   await shelfPage.getByRole("button", { name: "导入并合并" }).click();
-  await shelfPage.locator('input[aria-label="选择 HyesRead 备份文件"]').setInputFiles({
+  const backupFileInput = shelfPage.locator('input[aria-label="选择 HyesRead 备份文件"]');
+  await backupFileInput.evaluate(input => {
+    input.dataset.nativeAcceptanceChangeSeen = "false";
+    input.addEventListener("change", () => { input.dataset.nativeAcceptanceChangeSeen = "true"; }, { once: true });
+  });
+  await backupFileInput.setInputFiles({
     name: "hyesread-native-portable-backup.json",
     mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify(portableBackup)),
   });
+  let backupInputState = await backupFileInput.evaluate(input => ({
+    files: Array.from(input.files || [], file => ({ name: file.name, size: file.size })),
+    changeSeen: input.dataset.nativeAcceptanceChangeSeen === "true",
+  }));
+  if (backupInputState.files.length !== 1) {
+    throw new Error(`WebView2 did not accept the browser-book backup file: ${JSON.stringify(backupInputState)}`);
+  }
+  if (!backupInputState.changeSeen) {
+    log("dispatching the file input change event in WebView2");
+    await backupFileInput.dispatchEvent("change");
+    backupInputState = { ...backupInputState, changeSeen: true };
+  }
   log("waiting for the browser-book backup import to finish");
   const restoreSuccess = shelfPage.getByRole("status").filter({ hasText: "恢复 2 本浏览器书籍" });
   const restoreDeadline = Date.now() + 90_000;
@@ -597,10 +614,12 @@ try {
   }
   if (!(await restoreSuccess.isVisible().catch(() => false))) {
     const restoreDiagnostics = await shelfPage.evaluate(() => ({
+      url: location.href,
       status: Array.from(document.querySelectorAll('[role="status"]'), element => element.textContent?.trim()).filter(Boolean),
       alerts: Array.from(document.querySelectorAll('[role="alert"]'), element => element.textContent?.trim()).filter(Boolean),
+      bodyText: document.body.innerText.slice(-1200),
     }));
-    throw new Error(`Desktop browser-book backup import did not finish successfully. ${JSON.stringify({ restoreError, restoreDiagnostics, runtimeErrors: failures })}`);
+    throw new Error(`Desktop browser-book backup import did not finish successfully. ${JSON.stringify({ backupInputState, restoreError, restoreDiagnostics, runtimeErrors: failures })}`);
   }
   log("confirming both restored books appear on the shelf");
   await shelfPage.getByRole("button", { name: "书架" }).click();
