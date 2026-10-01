@@ -24,18 +24,18 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Build Windows installer
-        run: pnpm tauri build --bundles msi
-      - name: Install, launch, and uninstall the Windows MSI
+        run: pnpm tauri build --bundles nsis
+      - name: Install, launch, and uninstall the Windows EXE
         shell: pwsh
         run: |
-          $msi = Get-ChildItem 'src-tauri/target/release/bundle/msi/*.msi' | Select-Object -First 1
-          if (-not $msi) { throw 'The Windows MSI was not produced.' }
-          ./scripts/test-installer.ps1 -MsiPath $msi.FullName
-      - name: Save Windows installer
+          $installer = Get-ChildItem 'src-tauri/target/release/bundle/nsis/*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'The Windows EXE installer was not produced.' }
+          ./scripts/test-nsis-installer.ps1 -InstallerPath $installer.FullName
+      - name: Save Windows EXE installer
         uses: actions/upload-artifact@v4
         with:
-          name: windows-msi
-          path: src-tauri/target/release/bundle/msi/*.msi
+          name: windows-exe
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
 
   android:
@@ -121,10 +121,10 @@ jobs:
       - windows
       - android
     steps:
-      - name: Download verified Windows installer
+      - name: Download verified Windows EXE installer
         uses: actions/download-artifact@v4
         with:
-          name: windows-msi
+          name: windows-exe
           path: release-assets/windows
       - name: Download verified Android installer
         uses: actions/download-artifact@v4
@@ -137,10 +137,10 @@ jobs:
           body: |
             HyesRead ${{ github.ref_name }} for Windows x64 and Android ARM64.
 
-            Windows: download the MSI, install it, and open HyesRead from the Start menu.
+            Windows: download the setup EXE and follow the installer.
             Android: download the APK and install it on an ARM64 Android phone.
           files: |
-            release-assets/windows/*.msi
+            release-assets/windows/*-setup.exe
             release-assets/android/*.apk
           overwrite_files: true
           fail_on_unmatched_files: true
