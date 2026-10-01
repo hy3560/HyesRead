@@ -67,7 +67,7 @@ pnpm test:e2e
 Windows 桌面端还可以直接启动 WebView2 并验证 EPUB 正文：
 
 ```powershell
-pnpm tauri build --bundles msi
+pnpm tauri build --bundles nsis
 pnpm test:native
 ```
 

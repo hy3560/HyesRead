@@ -79,7 +79,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: cargo test --manifest-path src-tauri/Cargo.toml
-      - run: pnpm tauri build --bundles msi
+      - run: pnpm tauri build --bundles nsis
       - name: Install WebView2 Runtime for native acceptance
         shell: pwsh
         run: |
@@ -117,22 +117,22 @@ jobs:
           if (-not $runtimeVersion) { throw 'WebView2 Runtime is unavailable after installation.' }
           Write-Host "WebView2 Runtime: $runtimeVersion"
       - run: pnpm test:native
-      - name: Install, launch, and uninstall the Windows MSI
-        id: msi_acceptance
+      - name: Install, launch, and uninstall the Windows EXE
+        id: exe_acceptance
         shell: pwsh
         continue-on-error: true
         run: |
-          $msi = Get-ChildItem 'src-tauri/target/release/bundle/msi/*.msi' | Select-Object -First 1
-          if (-not $msi) { throw 'The Windows MSI was not produced.' }
-          ./scripts/test-installer.ps1 -MsiPath $msi.FullName
-      - name: Report MSI acceptance result
+          $installer = Get-ChildItem 'src-tauri/target/release/bundle/nsis/*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'The Windows EXE installer was not produced.' }
+          ./scripts/test-nsis-installer.ps1 -InstallerPath $installer.FullName
+      - name: Report EXE acceptance result
         if: always()
         shell: pwsh
         run: |
-          if ('${{ steps.msi_acceptance.outcome }}' -eq 'failure') {
-            $stage = '${{ steps.msi_acceptance.outputs.failure_stage }}'
-            $message = '${{ steps.msi_acceptance.outputs.failure_message }}'
+          if ('${{ steps.exe_acceptance.outcome }}' -eq 'failure') {
+            $stage = '${{ steps.exe_acceptance.outputs.failure_stage }}'
+            $message = '${{ steps.exe_acceptance.outputs.failure_message }}'
             if (-not $message) { $message = 'The acceptance script failed without a diagnostic message.' }
-            Write-Output "::error title=HyesRead MSI acceptance failed::$stage - $message"
-            throw "Windows MSI lifecycle acceptance failed at $stage. $message"
+            Write-Output "::error title=HyesRead EXE acceptance failed::$stage - $message"
+            throw "Windows EXE lifecycle acceptance failed at $stage. $message"
           }
