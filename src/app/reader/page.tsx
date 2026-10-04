@@ -56,6 +56,11 @@ function ReaderContent() {
     let onLoad: (() => void) | undefined;
     let reportTime: (() => void) | undefined;
     const key = `hyes-reader-location:${path}`;
+    let initialLocation: ReaderLocation | null = null;
+    try {
+      const stored = JSON.parse(localStorage.getItem(key) || "null");
+      if (Number.isFinite(stored?.fraction) && stored.fraction >= 0 && stored.fraction <= 1) initialLocation = stored;
+    } catch { initialLocation = null; }
     const bookmarkKey = `hyes-bookmarks:${path}`;
     const highlightKey = `hyes-highlights:${path}`;
     try {
@@ -210,9 +215,7 @@ function ReaderContent() {
       } else if (event.data?.type === "hyesread:ready") {
         setReaderReady(true);
         startReadingTimer();
-        let saved = null;
-        try { saved = JSON.parse(localStorage.getItem(key) || "null"); } catch { saved = null; }
-        frame.contentWindow?.postMessage({ type: "hyesread:restore", location: saved }, "*");
+        frame.contentWindow?.postMessage({ type: "hyesread:restore", location: initialLocation }, "*");
         let savedHighlights: Highlight[] = [];
         try { savedHighlights = JSON.parse(localStorage.getItem(highlightKey) || "[]"); } catch { savedHighlights = []; }
         frame.contentWindow?.postMessage({ type: "hyesread:annotations", annotations: savedHighlights.map(({ value, note, color }) => ({ value, note, color })) }, "*");
@@ -239,9 +242,6 @@ function ReaderContent() {
     };
     window.addEventListener("message", onMessage);
     onLoad = () => {
-      let saved = null;
-      try { saved = JSON.parse(localStorage.getItem(key) || "null"); } catch { saved = null; }
-      frame.contentWindow?.postMessage({ type: "hyesread:restore", location: saved }, "*");
       if (browserBook) frame.contentWindow?.postMessage({ type: "hyesread:open-file", file: browserBook }, "*");
     };
     frame.addEventListener("load", onLoad);

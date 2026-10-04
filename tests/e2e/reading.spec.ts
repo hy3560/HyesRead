@@ -521,6 +521,45 @@ test("adds, opens, and restores a local EPUB", async ({ page }) => {
   expect(runtimeErrors).toEqual([]);
 });
 
+test("restores a later chapter in a multi-chapter EPUB after reload", async ({ page }) => {
+  const chapters = Array.from({ length: 8 }, (_, index) => index + 1);
+  const xml = (name: string, text: string) => ({ name, data: Buffer.from(text, "utf8") });
+  const epub = createZipFixture([
+    xml("mimetype", "application/epub+zip"),
+    xml("META-INF/container.xml", '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'),
+    xml("book.opf", `<?xml version="1.0"?><package version="3.0" unique-identifier="id" xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">multi-chapter</dc:identifier><dc:title>跨章验收</dc:title><dc:language>zh</dc:language></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>${chapters.map(n => `<item id="c${n}" href="c${n}.xhtml" media-type="application/xhtml+xml"/>`).join("")}</manifest><spine>${chapters.map(n => `<itemref idref="c${n}"/>`).join("")}</spine></package>`),
+    xml("nav.xhtml", `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>目录</title></head><body><nav epub:type="toc"><ol>${chapters.map(n => `<li><a href="c${n}.xhtml">第 ${n} 章</a></li>`).join("")}</ol></nav></body></html>`),
+    ...chapters.map(n => xml(`c${n}.xhtml`, `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>第 ${n} 章</title></head><body><h1>第 ${n} 章</h1>${Array.from({ length: 70 }, (_, i) => `<p>CHAPTER-${n}-PARAGRAPH-${i + 1} 阅读进度验收正文，跨章节刷新后应保持原来的阅读位置。</p>`).join("")}</body></html>`)),
+  ]);
+  await page.goto("/");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "添加文件" }).click();
+  await (await chooserPromise).setFiles({ name: "跨章验收.epub", mimeType: "application/epub+zip", buffer: epub });
+  await page.getByRole("button", { name: "打开《跨章验收》" }).click();
+  const slider = page.frameLocator("#foliate-reader").locator("#progress-slider");
+  await expect.poll(() => slider.getAttribute("title")).toContain("Loc");
+  await expect(slider).toBeEnabled();
+  await slider.evaluate(element => {
+    (element as HTMLInputElement).value = "0.55";
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const readLocation = () => page.evaluate(() => {
+    const path = new URLSearchParams(location.search).get("path");
+    return JSON.parse(localStorage.getItem(`hyes-reader-location:${path}`) || "null");
+  });
+  await expect.poll(async () => (await readLocation())?.href).toBe("c5.xhtml");
+  const saved = await readLocation();
+  const chapterText = async () => {
+    const frame = page.frames().find(frame => frame.url().startsWith("blob:"));
+    try { return frame ? await frame.locator("body").innerText() : ""; } catch { return ""; }
+  };
+  await expect.poll(chapterText).toContain("CHAPTER-5-PARAGRAPH-1");
+  await page.reload();
+  await expect.poll(chapterText).toContain("CHAPTER-5-PARAGRAPH-1");
+  await expect.poll(async () => (await readLocation())?.href).toBe(saved.href);
+  await expect.poll(async () => Math.abs((await readLocation())?.fraction - saved.fraction)).toBeLessThan(0.02);
+});
+
 test("saves EPUB reading layout and appearance settings", async ({ page }) => {
   await page.goto("/");
   const chooserPromise = page.waitForEvent("filechooser");
