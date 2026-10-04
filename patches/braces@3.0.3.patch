@@ -1,0 +1,111 @@
+diff --git a/lib/compile.js b/lib/compile.js
+index dce69beb90ece5c3b0ca234a949418f9f34eedbc..94db3b5949e768407cde925f5136c9bd1b0bb440 100644
+--- a/lib/compile.js
++++ b/lib/compile.js
+@@ -2,8 +2,10 @@
+ 
+ const fill = require('fill-range');
+ const utils = require('./utils');
++const { assertDepth } = require('./depth-guard');
+ 
+ const compile = (ast, options = {}) => {
++  assertDepth(ast);
+   const walk = (node, parent = {}) => {
+     const invalidBlock = utils.isInvalidBrace(parent);
+     const invalidNode = node.invalid === true && options.escapeInvalid === true;
+diff --git a/lib/depth-guard.js b/lib/depth-guard.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..ba30597369466b76674863c3662ab2a098ca9fa3
+--- /dev/null
++++ b/lib/depth-guard.js
+@@ -0,0 +1,22 @@
++'use strict';
++
++const MAX_DEPTH = 64;
++
++// Validate iteratively before any recursive walker, including caller-supplied ASTs.
++const assertDepth = ast => {
++  const pending = [[ast, 0]];
++  const seen = new Set();
++  while (pending.length) {
++    const [node, depth] = pending.pop();
++    if (!node || typeof node !== 'object') continue;
++    if (depth > MAX_DEPTH || seen.has(node)) {
++      throw new SyntaxError('Brace AST exceeds safe nesting depth or contains repeated nodes');
++    }
++    seen.add(node);
++    if (Array.isArray(node.nodes)) {
++      for (const child of node.nodes) pending.push([child, depth + 1]);
++    }
++  }
++};
++
++module.exports = { MAX_DEPTH, assertDepth };
+diff --git a/lib/expand.js b/lib/expand.js
+index 35b2c41d6afdb8f0197959e26079f266e48370d3..40e0df2152a143d19149846c18966c1a1f1a47e0 100644
+--- a/lib/expand.js
++++ b/lib/expand.js
+@@ -3,6 +3,7 @@
+ const fill = require('fill-range');
+ const stringify = require('./stringify');
+ const utils = require('./utils');
++const { assertDepth } = require('./depth-guard');
+ 
+ const append = (queue = '', stash = '', enclose = false) => {
+   const result = [];
+@@ -31,6 +32,7 @@ const append = (queue = '', stash = '', enclose = false) => {
+ };
+ 
+ const expand = (ast, options = {}) => {
++  assertDepth(ast);
+   const rangeLimit = options.rangeLimit === undefined ? 1000 : options.rangeLimit;
+ 
+   const walk = (node, parent = {}) => {
+diff --git a/lib/parse.js b/lib/parse.js
+index 3a6988e629f52aee6609dc5ec290a5e9ff47cecb..9d33831e01712d21db6544bff0cf03f8a38d4a6f 100644
+--- a/lib/parse.js
++++ b/lib/parse.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const stringify = require('./stringify');
++const { MAX_DEPTH } = require('./depth-guard');
+ 
+ /**
+  * Constants
+@@ -144,6 +145,7 @@ const parse = (input, options = {}) => {
+ 
+     if (value === CHAR_LEFT_PARENTHESES) {
+       block = push({ type: 'paren', nodes: [] });
++      if (stack.length >= MAX_DEPTH) throw new SyntaxError('Brace pattern exceeds safe nesting depth');
+       stack.push(block);
+       push({ type: 'text', value });
+       continue;
+@@ -210,6 +212,7 @@ const parse = (input, options = {}) => {
+       };
+ 
+       block = push(brace);
++      if (stack.length >= MAX_DEPTH) throw new SyntaxError('Brace pattern exceeds safe nesting depth');
+       stack.push(block);
+       push({ type: 'open', value });
+       continue;
+diff --git a/lib/stringify.js b/lib/stringify.js
+index 8bcf872c31894f81a8c64d9202fd607e4fd7ea2b..ac51f6a4b4d0b738784aaf027b01f687232d0b3a 100644
+--- a/lib/stringify.js
++++ b/lib/stringify.js
+@@ -1,8 +1,10 @@
+ 'use strict';
+ 
+ const utils = require('./utils');
++const { assertDepth } = require('./depth-guard');
+ 
+ module.exports = (ast, options = {}) => {
++  assertDepth(ast);
+   const stringify = (node, parent = {}) => {
+     const invalidBlock = options.escapeInvalid && utils.isInvalidBrace(parent);
+     const invalidNode = node.invalid === true && options.escapeInvalid === true;
+@@ -29,4 +31,3 @@ module.exports = (ast, options = {}) => {
+ 
+   return stringify(ast);
+ };
+-
