@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const { createRequire } = require('node:module');
 const { spawnSync } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
 
 // Exercise the actual instances used by Tailwind, not an unused direct dependency.
 const tailwindRequire = createRequire(require.resolve('tailwindcss'));
@@ -38,9 +40,16 @@ let report;
 try { report = JSON.parse(audit.stdout); } catch { throw new Error(`Dependency audit returned invalid JSON: ${audit.stderr}`); }
 if (!report.metadata?.vulnerabilities || report.error) throw new Error('Dependency audit failed to obtain a valid registry report');
 const advisories = Object.values(report.advisories || {});
+const packageJson = JSON.parse(readFileSync(resolve(__dirname, '../package.json'), 'utf8'));
+const tailwindIsDevOnly = !!packageJson.devDependencies?.tailwindcss && !packageJson.dependencies?.tailwindcss;
 const accepted = advisories.filter(item => item.github_advisory_id === 'GHSA-vfj7-8cjw-p6xm'
   && item.module_name === 'braces'
-  && item.findings?.every(finding => finding.version === '3.0.3' && finding.dev === true));
+  && tailwindIsDevOnly
+  && item.findings?.length > 0
+  && item.findings.every(finding => finding.version === '3.0.3'
+    && finding.dev !== false
+    && finding.paths?.length > 0
+    && finding.paths.every(path => /^\.>tailwindcss>(?:chokidar|micromatch|fast-glob>micromatch)>braces$/.test(path))));
 const remaining = advisories.filter(item => !accepted.includes(item));
 for (const item of accepted) console.log(`Locally mitigated (upstream still reported): ${item.github_advisory_id}`);
 for (const item of remaining) console.error(`${item.severity}: ${item.module_name} ${item.github_advisory_id}`);
