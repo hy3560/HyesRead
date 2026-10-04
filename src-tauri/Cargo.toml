@@ -1,6 +1,6 @@
 [package]
 name = "hyes-read"
-version = "0.1.28"
+version = "0.1.29"
 edition = "2021"
 
 [lib]
@@ -30,6 +30,10 @@ zip = "0.6"
 base64 = "0.22"
 walkdir = "2.5.0"
 rayon = "1.12.0"
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "=3.6.3", features = ["windows-native"] }
+sha2 = "0.10"
 
 [build-dependencies]
 tauri-build = { version = "2.0.3", features = [] }

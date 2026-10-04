@@ -15,6 +15,7 @@ use tauri_plugin_fs::FsExt;
 
 mod opds;
 mod library_scan;
+mod credentials;
 
 #[derive(Default)]
 struct OpenFileQueue {
@@ -344,16 +345,36 @@ async fn open_book(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn fetch_opds_feed(url: String) -> Result<opds::OpdsFeed, String> {
-    opds::fetch_feed(&url).await
+async fn fetch_opds_feed(app: tauri::AppHandle, url: String, catalog_url: Option<String>, username: Option<String>, password: Option<String>) -> Result<opds::OpdsFeed, String> {
+    let service = format!("{}.opds", app.config().identifier);
+    let request = tauri::async_runtime::spawn_blocking(move || credentials::request_with_login(&service, &url, catalog_url.as_deref(), username, password))
+        .await.map_err(|_| "目录凭据读取失败".to_string())??;
+    opds::fetch_feed(&request).await
 }
 
 #[tauri::command]
-async fn download_opds_book(app: tauri::AppHandle, url: String, destination: String) -> Result<String, String> {
+async fn download_opds_book(app: tauri::AppHandle, url: String, destination: String, catalog_url: Option<String>) -> Result<String, String> {
     if !app.fs_scope().is_allowed(&destination) {
         return Err("请先在保存窗口中选择下载位置".to_string());
     }
-    opds::download_book(&url, &destination).await
+    let service = format!("{}.opds", app.config().identifier);
+    let request = tauri::async_runtime::spawn_blocking(move || credentials::request(&service, &url, catalog_url.as_deref()))
+        .await.map_err(|_| "目录凭据读取失败".to_string())??;
+    opds::download_book(&request, &destination).await
+}
+
+#[tauri::command]
+async fn save_opds_credentials(app: tauri::AppHandle, url: String, username: Option<String>, password: Option<String>) -> Result<String, String> {
+    let service = format!("{}.opds", app.config().identifier);
+    tauri::async_runtime::spawn_blocking(move || credentials::save(&service, &url, username, password))
+        .await.map_err(|_| "目录凭据保存失败".to_string())?
+}
+
+#[tauri::command]
+async fn delete_opds_credentials(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let service = format!("{}.opds", app.config().identifier);
+    tauri::async_runtime::spawn_blocking(move || credentials::delete(&service, &url))
+        .await.map_err(|_| "目录凭据删除失败".to_string())?
 }
 
 #[tauri::command]
@@ -405,6 +426,8 @@ pub fn run() {
             take_open_files,
             fetch_opds_feed,
             download_opds_book,
+            save_opds_credentials,
+            delete_opds_credentials,
             report_client_event,
             diagnostic_info
         ])

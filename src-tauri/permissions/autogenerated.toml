@@ -12,6 +12,8 @@ commands.allow = [
     "take_open_files",
     "fetch_opds_feed",
     "download_opds_book",
+    "save_opds_credentials",
+    "delete_opds_credentials",
     "report_client_event",
     "diagnostic_info"
 ]

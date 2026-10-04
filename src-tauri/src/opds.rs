@@ -299,8 +299,9 @@ fn client_for_url(raw_url: &str) -> Result<(reqwest::Client, Url), String> {
     if !username.is_empty() {
         let credential = format!("{username}:{}", password.unwrap_or_default());
         let encoded = base64::engine::general_purpose::STANDARD.encode(credential.as_bytes());
-        let authorization = reqwest::header::HeaderValue::from_str(&format!("Basic {encoded}"))
+        let mut authorization = reqwest::header::HeaderValue::from_str(&format!("Basic {encoded}"))
             .map_err(|_| "目录账号信息无效".to_string())?;
+        authorization.set_sensitive(true);
         headers.insert(reqwest::header::AUTHORIZATION, authorization);
     }
     reqwest::Client::builder()

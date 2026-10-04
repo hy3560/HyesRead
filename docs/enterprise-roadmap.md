@@ -50,7 +50,7 @@
 - 10k 书目筛选/排序、10k 实际 TXT 文件与 1k 混合文件扫描夹具已加入；仍需复杂大书、冷启动、网络盘和峰值内存测量。
 - 扫描与元数据解析已支持取消和批次预览；继续补充超大书解析上限、权限变化与元数据缓存验收。
 - 关键持久化数据逐步从松散 JSON/LocalStorage 迁移到带 schema/migration 的存储层；优先评估 Tauri SQL(SQLite)。
-- OPDS 凭证从普通 URL/Store 分离。不要再把 Tauri Stronghold 作为默认新方案：Tauri 官方维护讨论已说明其不再推荐且计划在 v3 移除。优先定义独立 credential abstraction，再选择 Android Keystore / Windows Credential Manager 等平台安全存储；社区跨平台插件成熟度不足时宁可暂缓，也不自制加密协议。
+- Windows OPDS 凭据通过独立 Vault 边界保存到 Credential Manager，普通 URL/Store 移除账号密码；包含旧 URL 迁移与同源隔离。细节见[目录账号说明](opds-credentials.md)。Android/网页无 OPDS 入口，未来开放时再接入对应平台安全存储。
 
 ### P2：可维护与可运营
 

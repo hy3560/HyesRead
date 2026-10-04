@@ -26,6 +26,7 @@ let app;
 let secondLaunch;
 let browser;
 let catalogServer;
+let acceptanceCredentialUrl;
 let storeSnapshotTaken = false;
 let appOutput = "";
 
@@ -342,14 +343,16 @@ try {
   await page.getByRole("button", { name: "在线目录" }).click();
   const epubBytes = await readFile(fixture);
   catalogServer = createServer((request, response) => {
-    if (request.url === "/private") {
+    if (request.url.startsWith("/private")) {
       if (request.headers.authorization !== `Basic ${Buffer.from("reader:secret").toString("base64")}`) {
         response.writeHead(401, { "www-authenticate": 'Basic realm="HyesRead acceptance"' });
         response.end();
         return;
       }
       response.writeHead(200, { "content-type": "application/atom+xml; charset=utf-8" });
-      response.end(`<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>已验证目录</title><entry><id>private-book</id><title>登录目录中的书籍</title></entry></feed>`);
+      if (request.url === "/private/category") response.end(`<feed xmlns="http://www.w3.org/2005/Atom"><title>登录分类</title></feed>`);
+      else if (request.url === "/private?page=2") response.end(`<feed xmlns="http://www.w3.org/2005/Atom"><title>已验证目录</title><entry><id>private-page-two</id><title>登录目录第二页</title></entry></feed>`);
+      else response.end(`<feed xmlns="http://www.w3.org/2005/Atom"><title>已验证目录</title><link rel="next" href="/private?page=2"/><entry><id>private-book</id><title>登录目录中的书籍</title><link rel="subsection" href="/private/category" title="登录分类"/></entry></feed>`);
       return;
     }
     if (request.url === "/opds") {
@@ -393,14 +396,20 @@ try {
   await page.getByRole("button", { name: "下一页" }).click();
   await page.getByRole("heading", { name: "第二页书籍" }).waitFor({ state: "visible", timeout: 10_000 });
   log("checking authenticated OPDS access in the Windows app");
-  await page.getByRole("textbox", { name: "OPDS 地址" }).fill(`http://reader:secret@127.0.0.1:${catalogAddress.port}/private`);
+  acceptanceCredentialUrl = `http://127.0.0.1:${catalogAddress.port}/private`;
+  await page.getByRole("textbox", { name: "OPDS 地址" }).fill(acceptanceCredentialUrl);
+  await page.getByRole("textbox", { name: "目录账号" }).fill("reader");
+  await page.getByLabel("目录密码").fill("secret");
   await page.getByRole("button", { name: "添加目录" }).click();
   await page.getByRole("heading", { name: "已验证目录" }).waitFor({ state: "visible", timeout: 10_000 });
-
-  await page.getByRole("button", { name: "移除目录 已验证目录" }).click();
+  await page.getByRole("button", { name: "打开 登录分类" }).click();
+  await page.getByRole("heading", { name: "登录分类" }).waitFor({ state: "visible", timeout: 10_000 });
+  await page.getByRole("button", { name: "返回上级目录" }).click();
+  await page.getByRole("button", { name: "下一页" }).click();
+  await page.getByRole("heading", { name: "登录目录第二页" }).waitFor({ state: "visible", timeout: 10_000 });
+  const catalogJson = await readFile(join(storageDirectory, "hyes_catalogs.json"), "utf8");
+  if (catalogJson.includes("secret") || catalogJson.includes("reader:")) throw new Error("OPDS credentials were saved to the ordinary JSON store");
   await page.getByRole("button", { name: "移除目录 本机 OPDS 验收" }).click();
-  await catalogServer.close();
-  catalogServer = undefined;
 
   log("checking PDF and second-instance forwarding");
   secondLaunch = spawn(executable, [pdfFixture], { cwd: projectRoot, stdio: "ignore", env: appEnvironment });
@@ -565,6 +574,33 @@ try {
     throw new Error("The removed PDF returned to the shelf after restarting the desktop app.");
   }
   await access(pdfFixture);
+  log("checking OPDS credentials survive process restart and migrate legacy URLs");
+  await shelfPage.getByRole("button", { name: "在线目录" }).click();
+  await shelfPage.getByRole("button", { name: "已验证目录", exact: true }).click();
+  await shelfPage.getByRole("heading", { name: "已验证目录" }).waitFor({ state: "visible", timeout: 10_000 });
+  await shelfPage.getByRole("button", { name: "移除目录 已验证目录" }).click();
+  const anonymousError = await shelfPage.evaluate(async url => {
+    try { await window.__TAURI_INTERNALS__.invoke("fetch_opds_feed", { url }); return ""; } catch (error) { return String(error); }
+  }, acceptanceCredentialUrl);
+  if (!anonymousError.includes("401")) throw new Error(`The removed catalog should reject anonymous requests with HTTP 401: ${anonymousError}`);
+  await shelfPage.evaluate(async url => {
+    const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
+    const rid = await invoke("plugin:store|load", { path: "hyes_catalogs.json" });
+    const legacy = new URL(url); legacy.username = "reader"; legacy.password = "secret";
+    await invoke("plugin:store|set", { rid, key: "sources", value: [{ url: legacy.href, title: "旧版登录目录" }] });
+    await invoke("plugin:store|save", { rid });
+  }, acceptanceCredentialUrl);
+  await shelfPage.reload();
+  await shelfPage.getByRole("button", { name: "在线目录" }).click();
+  await shelfPage.getByRole("button", { name: "旧版登录目录", exact: true }).click();
+  await shelfPage.getByRole("heading", { name: "已验证目录" }).waitFor({ state: "visible", timeout: 10_000 });
+  const migratedCatalogJson = await readFile(join(storageDirectory, "hyes_catalogs.json"), "utf8");
+  if (migratedCatalogJson.includes("secret") || migratedCatalogJson.includes("reader:")) throw new Error("Legacy OPDS credential migration left plaintext passwords in JSON");
+  await shelfPage.getByRole("button", { name: "移除目录 旧版登录目录" }).click();
+  acceptanceCredentialUrl = undefined;
+  await new Promise(resolvePromise => catalogServer.close(resolvePromise));
+  catalogServer = undefined;
+  await shelfPage.getByRole("button", { name: "书架", exact: true }).click();
   secondLaunch = spawn(executable, [pdfFixture], { cwd: projectRoot, stdio: "ignore", env: appEnvironment });
   const reopenExitCode = await Promise.race([
     new Promise(resolvePromise => secondLaunch.once("exit", resolvePromise)),
@@ -738,6 +774,10 @@ try {
 
   log(JSON.stringify({ result: "passed", desktop: "Windows WebView2", epubChapterRendered: true, epubSearch: true, epubHighlight: true, readerSettings: true, bookmarks: true, opdsNavigation: true, opdsPagination: true, opdsBasicAuthentication: true, pdfPageRendered: true, pdfSearch: true, pdfHighlight: true, pdfHighlightRestore: true, portableEpubRestore: true, portableTextRestore: true, shelfRemovalPersists: true, sourceFilePreserved: true, secondLaunchForwarded: true }));
 } finally {
+  if (browser && acceptanceCredentialUrl) {
+    const cleanupPage = browser.contexts().flatMap(context => context.pages()).find(candidate => candidate.url().startsWith("http://tauri.localhost"));
+    if (cleanupPage) await cleanupPage.evaluate(url => window.__TAURI_INTERNALS__.invoke("delete_opds_credentials", { url }), acceptanceCredentialUrl).catch(error => console.warn("Acceptance credential cleanup failed:", error.message));
+  }
   if (catalogServer) await new Promise(resolvePromise => catalogServer.close(resolvePromise));
   if (browser) await browser.close().catch(() => undefined);
   for (const child of [secondLaunch, app]) {
