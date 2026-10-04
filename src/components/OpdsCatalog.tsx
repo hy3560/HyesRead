@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, ArrowRight, BookOpen, Download, FolderOpen, Loader2, Plus, Search, Trash2 } from "lucide-react";
-import { invoke, readValue, writeValue } from "../lib/platform";
+import { invoke, updateValue } from "../lib/platform";
+import { CATALOG_STORE, migrateCatalogSources, type CatalogSource } from "../lib/catalogSources";
 
 type CatalogLink = {
   href: string;
@@ -27,10 +28,8 @@ type CatalogFeed = {
   links: CatalogLink[];
 };
 
-type CatalogSource = { url: string; title: string };
 type ReadingBook = { title: string; author: string; path: string; format: string; size: number; cover: string | null };
 
-const CATALOG_STORE = "hyes_catalogs.json";
 const BOOK_EXTENSIONS = ["epub", "pdf", "mobi", "azw3", "kf8", "fb2", "fbz", "cbz", "txt", "md"];
 
 function isAcquisition(link: CatalogLink) {
@@ -61,23 +60,11 @@ function linkExtension(link: CatalogLink) {
   return mediaTypes[link.media_type.toLowerCase()] || "epub";
 }
 
-function acquisitionUrl(linkUrl: string, sourceUrl: string) {
-  try {
-    const source = new URL(sourceUrl);
-    const target = new URL(linkUrl);
-    if (source.origin === target.origin && (source.username || source.password)) {
-      target.username = decodeURIComponent(source.username);
-      target.password = decodeURIComponent(source.password);
-    }
-    return target.toString();
-  } catch {
-    return linkUrl;
-  }
-}
-
 export default function OpdsCatalog({ onImported }: { onImported: (path: string) => Promise<boolean> }) {
   const [sources, setSources] = useState<CatalogSource[]>([]);
   const [sourceUrl, setSourceUrl] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [activeUrl, setActiveUrl] = useState("");
   const [trail, setTrail] = useState<CatalogSource[]>([]);
   const [feed, setFeed] = useState<CatalogFeed | null>(null);
@@ -87,7 +74,9 @@ export default function OpdsCatalog({ onImported }: { onImported: (path: string)
   const [error, setError] = useState("");
 
   useEffect(() => {
-    readValue<CatalogSource[]>(CATALOG_STORE, "sources", []).then(setSources).catch(reason => setError(`无法读取目录列表：${String(reason)}`));
+    let active = true;
+    migrateCatalogSources().then(value => { if (active) setSources(value); }).catch(reason => { if (active) setError(`无法读取目录列表：${String(reason)}`); });
+    return () => { active = false; };
   }, []);
 
   const visibleEntries = useMemo(() => {
@@ -95,13 +84,13 @@ export default function OpdsCatalog({ onImported }: { onImported: (path: string)
     return (feed?.entries || []).filter(entry => !query || `${entry.title} ${entry.author} ${entry.summary}`.toLocaleLowerCase().includes(query));
   }, [feed, filter]);
 
-  const fetchFeed = async (url: string) => invoke<CatalogFeed>("fetch_opds_feed", { url });
+  const fetchFeed = async (url: string, catalogUrl = activeUrl, login: Record<string, string> = {}) => invoke<CatalogFeed>("fetch_opds_feed", { url, catalogUrl: catalogUrl || null, ...login });
 
   const openSource = async (source: CatalogSource) => {
     setBusy(true);
     setError("");
     try {
-      const nextFeed = await fetchFeed(source.url);
+      const nextFeed = await fetchFeed(source.url, source.url);
       setActiveUrl(source.url);
       setTrail([{ url: source.url, title: nextFeed.title || source.title }]);
       setFeed(nextFeed);
@@ -125,13 +114,18 @@ export default function OpdsCatalog({ onImported }: { onImported: (path: string)
     setBusy(true);
     setError("");
     try {
-      const nextFeed = await fetchFeed(url);
-      const nextSources = [...sources.filter(source => source.url !== url), { url, title: nextFeed.title }];
-      await writeValue(CATALOG_STORE, "sources", nextSources);
+      if (!username && password) throw new Error("请填写目录账号");
+      await migrateCatalogSources();
+      const login = username ? { username, password } : {};
+      const nextFeed = await fetchFeed(url, url, login);
+      const cleanUrl = await invoke<string>("save_opds_credentials", { url, ...login });
+      const nextSources = await updateValue<CatalogSource[]>(CATALOG_STORE, "sources", [], current => [...current.filter(source => source.url !== cleanUrl), { url: cleanUrl, title: nextFeed.title }]);
       setSources(nextSources);
       setSourceUrl("");
-      setActiveUrl(url);
-      setTrail([{ url, title: nextFeed.title }]);
+      setUsername("");
+      setPassword("");
+      setActiveUrl(cleanUrl);
+      setTrail([{ url: cleanUrl, title: nextFeed.title }]);
       setFeed(nextFeed);
       setFilter("");
     } catch (reason) {
@@ -142,9 +136,9 @@ export default function OpdsCatalog({ onImported }: { onImported: (path: string)
   };
 
   const removeSource = async (url: string) => {
-    const nextSources = sources.filter(source => source.url !== url);
     try {
-      await writeValue(CATALOG_STORE, "sources", nextSources);
+      await invoke("delete_opds_credentials", { url });
+      const nextSources = await updateValue<CatalogSource[]>(CATALOG_STORE, "sources", [], current => current.filter(source => source.url !== url));
       setSources(nextSources);
       if (activeUrl === url) {
         setActiveUrl("");
@@ -219,7 +213,7 @@ export default function OpdsCatalog({ onImported }: { onImported: (path: string)
       });
       if (!destination) return;
       setDownloading(link.href);
-      const path = await invoke<string>("download_opds_book", { url: acquisitionUrl(link.href, activeUrl), destination });
+      const path = await invoke<string>("download_opds_book", { url: link.href, catalogUrl: activeUrl, destination });
       if (!await onImported(path)) setError("电子书已保存，但没有加入书架。");
     } catch (reason) {
       setError(`下载失败：${String(reason)}`);
@@ -232,9 +226,11 @@ export default function OpdsCatalog({ onImported }: { onImported: (path: string)
     <div className="grid min-h-full grid-cols-[minmax(220px,280px)_minmax(0,1fr)] gap-6 max-[760px]:grid-cols-1">
       <aside className="space-y-5 rounded-2xl border border-white/5 bg-white/[0.02] p-4">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-white"><FolderOpen size={17} className="text-orange-400" />书目来源</h2>
-        <form className="flex items-end gap-2" onSubmit={event => { event.preventDefault(); void addSource(); }}>
+        <form className="space-y-2" onSubmit={event => { event.preventDefault(); void addSource(); }}>
           <label className="min-w-0 flex-1"><span className="mb-1 block text-xs text-zinc-500">OPDS 地址</span><input aria-label="OPDS 地址" type="url" value={sourceUrl} onChange={event => setSourceUrl(event.target.value)} className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-orange-500/60" /></label>
-          <button type="submit" aria-label="添加目录" disabled={busy || !sourceUrl.trim()} className="rounded-lg border border-white/10 px-3 text-zinc-300 hover:bg-white/10 disabled:opacity-40"><Plus size={16} /></button>
+          <label className="block"><span className="mb-1 block text-xs text-zinc-500">账号</span><input aria-label="目录账号" autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-orange-500/60" /></label>
+          <label className="block"><span className="mb-1 block text-xs text-zinc-500">密码</span><input aria-label="目录密码" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-orange-500/60" /></label>
+          <button type="submit" aria-label="添加目录" disabled={busy || !sourceUrl.trim()} className="flex items-center gap-1 rounded-lg border border-white/10 px-3 py-2 text-xs text-zinc-300 hover:bg-white/10 disabled:opacity-40"><Plus size={16} />添加</button>
         </form>
         <div className="space-y-2">
           {sources.map(source => (

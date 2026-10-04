@@ -9,6 +9,7 @@ import OpdsCatalog from "../components/OpdsCatalog";
 import { createBackup, downloadBackup, restoreBackup } from "../lib/backup";
 import { createDiagnosticReport, downloadDiagnosticReport, runSelfCheck } from "../lib/diagnostics";
 import { ensureDataSchema } from "../lib/dataSchema";
+import { migrateCatalogSources } from "../lib/catalogSources";
 import { mergeBookAddedAt, removeBookAddedAt, type BookAddedAt } from "../lib/bookOrder";
 import { filterAndSortBooks, type LibrarySortMode } from "../lib/libraryView";
 import { runLibraryScan, type ScanProgress } from "../lib/libraryScan";
@@ -281,6 +282,7 @@ export default function HyesReadMaster() {
     (async () => {
       try {
         await ensureDataSchema();
+        if (isDesktop()) void migrateCatalogSources().catch(error => console.error("目录凭据迁移失败", error));
         const path = await readValue("hyes_master.json", "library_path", "");
         const discretePaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
         const excludedPaths = await readValue<string[]>("hyes_master.json", "excluded_files", []);
