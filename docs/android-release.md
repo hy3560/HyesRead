@@ -1,5 +1,7 @@
 # Android 发布
 
+正式发布前，同一提交在 `main` 的最新 Quality checks 必须完整成功，且标签、package.json、Tauri 配置和 Cargo 版本必须一致。若检查还在运行或失败，发布流程拒绝开始构建；质量检查完成后可重新运行发布工作流。旧提交、PR 检查或同提交更早的成功运行不能替代最新验收。
+
 GitHub Release 同时上传通过签名验证的 Android ARM64 APK 与 AAB。APK 用于直接安装和站外分发，AAB 用于 Google Play。Android 构建本身不需要密钥；发布工作流需要以下仓库 Actions Secrets：
 
 | Secret | 内容 |

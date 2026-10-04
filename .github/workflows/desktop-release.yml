@@ -7,9 +7,30 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require matching versions and successful quality acceptance
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { validateVersions, requireSuccessfulQuality } = require('./scripts/release-preflight.cjs');
+            validateVersions(process.env.GITHUB_WORKSPACE, context.ref.replace('refs/tags/', ''));
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...context.repo,
+              workflow_id: 'quality.yml',
+              head_sha: context.sha,
+              event: 'push',
+              per_page: 100
+            });
+            const accepted = requireSuccessfulQuality(runs, context.sha);
+            core.info(`Quality acceptance: ${accepted.html_url}`);
   windows:
+    needs: preflight
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +60,7 @@ jobs:
           if-no-files-found: error
 
   android:
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - name: Check Android signing secrets
