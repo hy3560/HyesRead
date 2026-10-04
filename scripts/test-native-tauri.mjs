@@ -16,10 +16,11 @@ if (process.platform !== "win32") {
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const executable = resolve(projectRoot, "src-tauri/target/release/hyes-read.exe");
 const fixture = resolve(projectRoot, "tests/fixtures/hyesread-acceptance.epub");
-const storageDirectory = join(process.env.APPDATA ?? "", "com.hyes.read");
+const acceptanceIdentifier = "com.hyes.read.acceptance";
+const storageDirectory = join(process.env.APPDATA ?? "", acceptanceIdentifier);
 const recoveryDirectory = await mkdtemp(join(tmpdir(), "hyesread-store-recovery-"));
 const webviewDirectory = await mkdtemp(join(tmpdir(), "hyesread-webview2-"));
-const managedStoreFiles = ["hyes_master.json", "hyes_stats.json", "hyes_catalogs.json"];
+const managedStoreFiles = ["hyes_master.json", "hyes_stats.json", "hyes_catalogs.json", "hyes_system.json"];
 const originalStoreFiles = new Set();
 let app;
 let secondLaunch;
@@ -113,6 +114,7 @@ async function choosePort() {
 
 function createAcceptanceConfig(port) {
   return JSON.stringify({
+    identifier: acceptanceIdentifier,
     app: {
       windows: [{ label: "main", additionalBrowserArgs: `--remote-debugging-port=${port}` }],
     },
@@ -222,6 +224,41 @@ try {
   if (!chapterText.includes("这是用于检查离线 EPUB 阅读路径的测试内容。")) {
     throw new Error(`WebView2 did not render the EPUB chapter. Frame: ${chapterFrame?.url() ?? "missing"}; content: ${chapterText.slice(0, 300)}`);
   }
+  log("checking incremental native scanning and cancellation");
+  const scanFixture = join(webviewDirectory, "scan-books");
+  await mkdir(scanFixture);
+  const scanEpub = await readFile(fixture);
+  for (let offset = 0; offset < 1_000; offset += 32) {
+    await Promise.all(Array.from({ length: Math.min(32, 1_000 - offset) }, (_, index) =>
+      (offset + index) % 4 === 0
+        ? writeFile(join(scanFixture, `scan-${offset + index}.epub`), scanEpub)
+        : writeFile(join(scanFixture, `scan-${offset + index}.txt`), "Native scan acceptance")));
+  }
+  const nativeScan = await page.evaluate(async root => {
+    const internals = window.__TAURI_INTERNALS__;
+    const invoke = (command, args) => internals.invoke(command, args);
+    const normal = await invoke("scan_library_incremental", { folderPath: root, scanId: "acceptance-complete" });
+    if (normal.books.length !== 1_000 || !normal.complete) throw new Error("Native scan did not return all books");
+    let cancellation;
+    const handler = internals.transformCallback(event => {
+      if (event.payload.scanId === "acceptance-cancel") cancellation = invoke("cancel_library_scan", { scanId: "acceptance-cancel" });
+    });
+    const listener = await invoke("plugin:event|listen", { event: "hyesread:scan-progress", target: { kind: "Any" }, handler });
+    try {
+      const cancelled = await invoke("scan_library_incremental", { folderPath: root, scanId: "acceptance-cancel" });
+      await cancellation;
+      if (!cancelled.cancelled || cancelled.complete) throw new Error("Native scan was not cancelled");
+      const resumed = await invoke("scan_library_incremental", { folderPath: root, scanId: "acceptance-resume" });
+      if (!resumed.complete || resumed.books.length !== 1_000) throw new Error("Native scan registry did not recover after cancellation");
+      return { books: normal.books.length, cancelledAt: cancelled.scanned, resumed: resumed.complete };
+    } finally {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener("hyesread:scan-progress", listener);
+      await invoke("plugin:event|unlisten", { event: "hyesread:scan-progress", eventId: listener });
+      internals.unregisterCallback(handler);
+    }
+  }, scanFixture);
+  log(JSON.stringify({ nativeScan }));
+
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 
   const progress = await readerFrame.locator("#progress-slider").getAttribute("title");
@@ -513,7 +550,17 @@ try {
   }
   if (!shelfPage) throw new Error("The restarted desktop app did not open its shelf.");
   await shelfPage.getByRole("button", { name: "添加文件" }).waitFor({ state: "visible", timeout: 10_000 });
-  await shelfPage.locator("button[aria-label^='打开《']").first().waitFor({ state: "visible", timeout: 10_000 });
+  try {
+    await shelfPage.locator("button[aria-label^='打开《']").first().waitFor({ state: "visible", timeout: 10_000 });
+  } catch (error) {
+    const state = await shelfPage.evaluate(async () => {
+      const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
+      const rid = await invoke("plugin:store|load", { path: "hyes_master.json" });
+      const entries = await invoke("plugin:store|entries", { rid });
+      return { entries, body: document.body.innerText, url: location.href };
+    });
+    throw new Error(`Shelf restart failed: ${JSON.stringify(state)}; ${error}`);
+  }
   if (await shelfPage.locator("button[aria-label^='打开《']").evaluateAll(elements => elements.some(element => (element.getAttribute("aria-label") || "").toLocaleLowerCase().includes("native-acceptance")))) {
     throw new Error("The removed PDF returned to the shelf after restarting the desktop app.");
   }
@@ -649,6 +696,43 @@ try {
   await shelfPage.frameLocator("#foliate-reader").locator("article").getByText("桌面端恢复的浏览器书籍可以继续阅读。", { exact: true }).waitFor({ state: "visible", timeout: 30_000 });
   await shelfPage.getByRole("button", { name: "← 返回书库" }).click();
   await shelfPage.getByRole("button", { name: "打开《native-portable-epub》" }).waitFor({ state: "visible", timeout: 10_000 });
+
+  log("checking the scan cancellation control preserves the current shelf");
+  const beforeScanUi = await shelfPage.evaluate(async root => {
+    const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
+    const rid = await invoke("plugin:store|load", { path: "hyes_master.json" });
+    const [libraryPath] = await invoke("plugin:store|get", { rid, key: "library_path" });
+    const [addedAt] = await invoke("plugin:store|get", { rid, key: "book_added_at" });
+    const [discrete] = await invoke("plugin:store|get", { rid, key: "discrete_files" });
+    await invoke("plugin:store|set", { rid, key: "library_path", value: root });
+    await invoke("plugin:store|save", { rid });
+    return { rid, libraryPath: libraryPath || "", addedAt: JSON.stringify(addedAt), discrete: JSON.stringify(discrete) };
+  }, scanFixture);
+  try {
+    await shelfPage.reload();
+    const cancelButton = shelfPage.getByRole("button", { name: "取消扫描" });
+    await cancelButton.waitFor({ state: "visible", timeout: 10_000 });
+    await cancelButton.click();
+    await cancelButton.waitFor({ state: "hidden", timeout: 10_000 });
+    await shelfPage.getByRole("button", { name: "打开《native-portable-epub》" }).waitFor({ state: "visible", timeout: 10_000 });
+    const afterScanUi = await shelfPage.evaluate(async () => {
+      const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
+      const rid = await invoke("plugin:store|load", { path: "hyes_master.json" });
+      const [addedAt] = await invoke("plugin:store|get", { rid, key: "book_added_at" });
+      const [discrete] = await invoke("plugin:store|get", { rid, key: "discrete_files" });
+      return { addedAt: JSON.stringify(addedAt), discrete: JSON.stringify(discrete) };
+    });
+    if (beforeScanUi.addedAt !== afterScanUi.addedAt || beforeScanUi.discrete !== afterScanUi.discrete) {
+      throw new Error("Cancelling the scan changed existing library metadata");
+    }
+  } finally {
+    await shelfPage.evaluate(async original => {
+      const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
+      const rid = await invoke("plugin:store|load", { path: "hyes_master.json" });
+      await invoke("plugin:store|set", { rid, key: "library_path", value: original.libraryPath });
+      await invoke("plugin:store|save", { rid });
+    }, beforeScanUi);
+  }
 
   if (failures.length) throw new Error(`Native WebView2 runtime errors: ${failures.join("\n")}`);
 

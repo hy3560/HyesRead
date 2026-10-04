@@ -1,6 +1,6 @@
 "use client";
 
-import { readValue, writeValue } from "./platform";
+import { readValue, updateValue, writeValue } from "./platform";
 
 const SYSTEM_STORE = "hyes_system.json";
 export const CURRENT_DATA_SCHEMA_VERSION = 1;
@@ -24,7 +24,19 @@ function normalizeTimestamps(value: unknown): Record<string, number> {
   return normalized;
 }
 
-export async function ensureDataSchema(): Promise<DataSchemaState> {
+let schemaCheck: Promise<DataSchemaState> | undefined;
+
+export function ensureDataSchema(): Promise<DataSchemaState> {
+  if (schemaCheck) return schemaCheck;
+  const operation = migrateDataSchema();
+  schemaCheck = operation;
+  void operation.finally(() => {
+    if (schemaCheck === operation) schemaCheck = undefined;
+  }).catch(() => undefined);
+  return operation;
+}
+
+async function migrateDataSchema(): Promise<DataSchemaState> {
   const version = await readValue<number>(SYSTEM_STORE, "schema_version", 0);
   if (!Number.isInteger(version) || version < 0) throw new Error("本地数据版本信息无效");
   if (version > CURRENT_DATA_SCHEMA_VERSION) {
@@ -33,14 +45,11 @@ export async function ensureDataSchema(): Promise<DataSchemaState> {
 
   let current = version;
   if (current < 1) {
-    const [discreteFiles, excludedFiles, bookAddedAt] = await Promise.all([
-      readValue<unknown>("hyes_master.json", "discrete_files", []),
-      readValue<unknown>("hyes_master.json", "excluded_files", []),
-      readValue<unknown>("hyes_master.json", "book_added_at", {}),
-    ]);
-    await writeValue("hyes_master.json", "discrete_files", dedupeStrings(discreteFiles));
-    await writeValue("hyes_master.json", "excluded_files", dedupeStrings(excludedFiles));
-    await writeValue("hyes_master.json", "book_added_at", normalizeTimestamps(bookAddedAt));
+    // Normalize the latest value in the same queue used by file imports.
+    // A snapshot followed by a write can discard a simultaneous import.
+    await updateValue<unknown>("hyes_master.json", "discrete_files", [], dedupeStrings);
+    await updateValue<unknown>("hyes_master.json", "excluded_files", [], dedupeStrings);
+    await updateValue<unknown>("hyes_master.json", "book_added_at", {}, normalizeTimestamps);
     current = 1;
     await writeValue(SYSTEM_STORE, "schema_version", current);
   }

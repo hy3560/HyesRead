@@ -11,6 +11,7 @@ import { createDiagnosticReport, downloadDiagnosticReport, runSelfCheck } from "
 import { ensureDataSchema } from "../lib/dataSchema";
 import { mergeBookAddedAt, removeBookAddedAt, type BookAddedAt } from "../lib/bookOrder";
 import { filterAndSortBooks, type LibrarySortMode } from "../lib/libraryView";
+import { runLibraryScan, type ScanProgress } from "../lib/libraryScan";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Library, Settings2, Loader2, Ghost, Globe2,
@@ -68,6 +69,10 @@ export default function HyesReadMaster() {
 
   const [activeTab, setActiveTab] = useState<ViewType>('library');
   const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<ScanProgress<Book> | null>(null);
+  const [scanPreview, setScanPreview] = useState<Book[]>([]);
+  const [scanStopping, setScanStopping] = useState(false);
+  const scanController = useRef<AbortController | null>(null);
 
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -250,7 +255,8 @@ export default function HyesReadMaster() {
     };
   }, [books, sessions, chartRange]);
 
-  const filteredBooks = useMemo(() => filterAndSortBooks(books, bookAddedAt, deferredQuery, sortMode), [books, bookAddedAt, deferredQuery, sortMode]);
+  const displayedBooks = useMemo(() => scanPreview.length ? mergeBooks(books, scanPreview) : books, [books, scanPreview]);
+  const filteredBooks = useMemo(() => filterAndSortBooks(displayedBooks, bookAddedAt, deferredQuery, sortMode), [displayedBooks, bookAddedAt, deferredQuery, sortMode]);
   const visibleBooks = useMemo(() => filteredBooks.slice(0, visibleBookCount), [filteredBooks, visibleBookCount]);
 
   useEffect(() => {
@@ -271,6 +277,7 @@ export default function HyesReadMaster() {
   }, [activeTab, filteredBooks.length, visibleBookCount]);
 
   useEffect(() => {
+    let active = true;
     (async () => {
       try {
         await ensureDataSchema();
@@ -302,19 +309,45 @@ export default function HyesReadMaster() {
         const storedSessions = await readValue<ReadingSession[]>("hyes_stats.json", "sessions", []);
         setSessions(storedSessions);
 
-        if (path) handleScan(path);
+        if (active && path) handleScan(path);
       } catch (e) {
         console.error("书架读取失败", e);
         setOperationError(`无法读取本机书架：${String(e)}`);
       }
     })();
+    return () => { active = false; scanController.current?.abort(); };
   }, []);
 
   const handleScan = async (targetPath: string) => {
+    if (scanController.current) return;
+    const controller = new AbortController();
+    scanController.current = controller;
     setOperationError("");
     setIsScanning(true);
+    setScanPreview([]);
+    setScanStopping(false);
+    setScanProgress({ scanId: "", scanned: 0, skipped: 0, books: [] });
+    let progressTimer: ReturnType<typeof setTimeout> | undefined;
+    let pendingPreview: Book[] = [];
+    let latestProgress: ScanProgress<Book> | null = null;
     try {
-      const result: Book[] = await invoke("scan_library", { folderPath: targetPath });
+      const scanned = await runLibraryScan<Book>(targetPath, controller.signal, progress => {
+        pendingPreview.push(...progress.books);
+        latestProgress = progress;
+        if (progressTimer) return;
+        progressTimer = setTimeout(() => {
+          progressTimer = undefined;
+          if (controller.signal.aborted) { pendingPreview = []; return; }
+          if (latestProgress) setScanProgress({ ...latestProgress, books: [] });
+          const incoming = pendingPreview;
+          pendingPreview = [];
+          if (incoming.length) setScanPreview(current => mergeBooks(current, incoming));
+        }, 100);
+      });
+      if (!scanned || controller.signal.aborted) return;
+      // Scanning is complete; do not offer cancellation during persistence.
+      setScanProgress(null);
+      const result = scanned.books;
       await writeValue("hyes_master.json", "library_path", targetPath);
       const excluded = new Set(await readValue<string[]>("hyes_master.json", "excluded_files", []));
       const normalizedRoot = targetPath.replace(/[\\/]+$/, "").toLocaleLowerCase();
@@ -324,18 +357,26 @@ export default function HyesReadMaster() {
       };
       const visiblePaths = new Set(result.filter(book => !excluded.has(book.path)).map(book => book.path));
       const nextBookAddedAt = await updateValue<BookAddedAt>("hyes_master.json", "book_added_at", {}, current => {
-        const retained = Object.fromEntries(Object.entries(current).filter(([path]) => !insideRoot(path) || visiblePaths.has(path)));
+        const retained = Object.fromEntries(Object.entries(current).filter(([path]) => !scanned.complete || !insideRoot(path) || visiblePaths.has(path)));
         return mergeBookAddedAt(retained, Array.from(visiblePaths));
       });
       setBookAddedAt(nextBookAddedAt);
       setBooks(prev => {
-          return mergeBooks(prev.filter(book => !insideRoot(book.path)), result.filter(book => !excluded.has(book.path)));
+          return mergeBooks(prev.filter(book => !scanned.complete || !insideRoot(book.path)), result.filter(book => !excluded.has(book.path)));
       });
+      if (scanned.skipped) setOperationError(`已读取 ${scanned.scanned} 本，${scanned.skipped} 项无法读取。原书架记录已保留。`);
     } catch (e: any) {
       console.error(e);
       setOperationError(`扫描书库失败：${String(e)}`);
     }
-    finally { setIsScanning(false); }
+    finally {
+      if (progressTimer) clearTimeout(progressTimer);
+      if (scanController.current === controller) scanController.current = null;
+      setScanProgress(null);
+      setScanPreview([]);
+      setScanStopping(false);
+      setIsScanning(false);
+    }
   };
 
   const handleImportFiles = async (paths: string[]): Promise<boolean> => {
@@ -474,7 +515,7 @@ export default function HyesReadMaster() {
                   console.error("文件添加失败", e);
                   setOperationError(`文件添加失败：${String(e)}`);
                 }
-              }} aria-label="添加文件" className="flex items-center gap-2 bg-white/5 text-zinc-300 border border-white/10 px-5 py-2.5 rounded-2xl font-bold text-xs hover:bg-white/10 hover:text-white transition-all z-20 max-[640px]:h-11 max-[640px]:w-11 max-[640px]:justify-center max-[640px]:p-0">
+              }} disabled={isScanning} aria-label="添加文件" className="flex items-center gap-2 bg-white/5 text-zinc-300 border border-white/10 px-5 py-2.5 rounded-2xl font-bold text-xs hover:bg-white/10 hover:text-white transition-all z-20 disabled:opacity-40 max-[640px]:h-11 max-[640px]:w-11 max-[640px]:justify-center max-[640px]:p-0">
                 <FilePlus size={16} />
                 <span className="max-[640px]:hidden">添加文件</span>
             </button>
@@ -488,7 +529,7 @@ export default function HyesReadMaster() {
                   console.error("目录选择失败", e);
                   setOperationError(`目录选择失败：${String(e)}`);
                 }
-              }} aria-label="导入书库" className="flex items-center gap-2 bg-white text-black px-5 py-2.5 rounded-2xl font-black text-xs hover:bg-orange-500 hover:text-white transition-all z-20 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_20px_rgba(249,115,22,0.4)] max-[640px]:h-11 max-[640px]:w-11 max-[640px]:justify-center max-[640px]:p-0">
+              }} disabled={isScanning} aria-label="导入书库" className="flex items-center gap-2 bg-white text-black px-5 py-2.5 rounded-2xl font-black text-xs hover:bg-orange-500 hover:text-white transition-all z-20 disabled:opacity-40 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_20px_rgba(249,115,22,0.4)] max-[640px]:h-11 max-[640px]:w-11 max-[640px]:justify-center max-[640px]:p-0">
                 <FolderPlus size={16} />
                 <span className="max-[640px]:hidden">导入书库</span>
             </button>}
@@ -496,6 +537,10 @@ export default function HyesReadMaster() {
         </header>
 
         <section className="flex-1 overflow-y-auto p-12 custom-scrollbar relative max-[640px]:p-4 max-[640px]:pb-20">
+          {scanProgress && <div role="status" aria-live="polite" className="mb-5 flex items-center justify-between gap-4 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm">
+            <span>{scanStopping ? "正在停止扫描" : `已读取 ${scanProgress.scanned} 本`}{scanProgress.skipped > 0 ? `，跳过 ${scanProgress.skipped} 项` : ""}</span>
+            <button type="button" disabled={scanStopping} onClick={() => { setScanStopping(true); scanController.current?.abort(); }} className="shrink-0 rounded-lg px-3 py-2 hover:bg-white/10 disabled:opacity-40">取消扫描</button>
+          </div>}
           {operationError && (
             <div role="alert" className="mb-5 flex items-start justify-between gap-4 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-300">
               <span>{operationError}</span>
@@ -503,7 +548,7 @@ export default function HyesReadMaster() {
             </div>
           )}
           <AnimatePresence mode="wait">
-            {isScanning && (
+            {isScanning && !scanProgress && (
               <motion.div 
                 key="loading"
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -530,7 +575,7 @@ export default function HyesReadMaster() {
               </motion.div>
             )}
 
-            {!isScanning && activeTab === 'library' && (
+            {(!isScanning || scanProgress !== null) && activeTab === 'library' && (
               <div className="space-y-8">
                 <div className="flex flex-wrap items-center gap-3">
                   <label className="flex min-w-64 flex-1 items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-zinc-500">

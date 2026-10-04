@@ -3,8 +3,10 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { mapBookPaths } from "../../src/lib/bookPaths";
 import { remapBackupPaths } from "../../src/lib/backupPaths";
-import { isMobileUserAgent } from "../../src/lib/platform";
+import { isMobileUserAgent, updateValue } from "../../src/lib/platform";
+import { ensureDataSchema } from "../../src/lib/dataSchema";
 import { filterAndSortBooks } from "../../src/lib/libraryView";
+import { runLibraryScan, type ScanProgress } from "../../src/lib/libraryScan";
 
 function createPdfFixture(pageCount = 1) {
   const objects = [
@@ -80,6 +82,82 @@ function createZipFixture(files: { name: string; data: Buffer }[]) {
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...local, ...central, end]);
 }
+
+test("coalesces schema migration and preserves simultaneous file imports", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const entries = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => entries.get(key) ?? null,
+    setItem: (key: string, value: string) => { entries.set(key, value); },
+  } });
+  try {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      entries.clear();
+      entries.set("hyes:hyes_master.json", JSON.stringify({ discrete_files: ["old.epub", "old.epub", null], book_added_at: { "old.epub": 123 } }));
+      const migration = ensureDataSchema();
+      expect(ensureDataSchema()).toBe(migration);
+      const importing = updateValue<unknown[]>("hyes_master.json", "discrete_files", [], existing => [...existing, "new.epub"]);
+      await Promise.all([migration, importing]);
+      const master = JSON.parse(entries.get("hyes:hyes_master.json")!);
+      expect(master.discrete_files).toEqual(["old.epub", "new.epub"]);
+      expect(master.book_added_at).toEqual({ "old.epub": 123 });
+      expect(JSON.parse(entries.get("hyes:hyes_system.json")!).schema_version).toBe(1);
+    }
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, "localStorage", descriptor);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+test("subscribes before native scans and removes listeners after success or failure", async () => {
+  const events: string[] = [];
+  const received: number[] = [];
+  let callback: (progress: ScanProgress<number>) => void = () => {};
+  const backend = {
+    subscribe: async (handler: typeof callback) => { events.push("subscribe"); callback = handler; return () => { events.push("unsubscribe"); }; },
+    start: async (_root: string, scanId: string) => {
+      events.push("start");
+      callback({ scanId: "stale", scanned: 999, skipped: 0, books: [999] });
+      callback({ scanId, scanned: 2, skipped: 0, books: [1, 2] });
+      return { books: [1, 2], scanned: 2, skipped: 0, cancelled: false, complete: true, warnings: [] };
+    },
+    cancel: async () => {},
+  };
+  const result = await runLibraryScan("books", new AbortController().signal, progress => received.push(...progress.books), backend);
+  expect(result?.books).toEqual([1, 2]);
+  expect(received).toEqual([1, 2]);
+  expect(events).toEqual(["subscribe", "start", "unsubscribe"]);
+  events.length = 0;
+  await expect(runLibraryScan("books", new AbortController().signal, () => {}, { ...backend, start: async () => { throw new Error("scan failed"); } })).rejects.toThrow("scan failed");
+  expect(events).toEqual(["subscribe", "unsubscribe"]);
+});
+
+test("cancels native scans without publishing partial results and handles cancellation before subscription", async () => {
+  const controller = new AbortController();
+  let cancelledId = "";
+  let released = false;
+  const result = await runLibraryScan<number>("books", controller.signal, () => {}, {
+    subscribe: async () => () => { released = true; },
+    start: async (_root, scanId) => {
+      controller.abort();
+      expect(cancelledId).toBe(scanId);
+      return { books: [1], scanned: 1, skipped: 0, cancelled: true, complete: false, warnings: [] };
+    },
+    cancel: async scanId => { cancelledId = scanId; },
+  });
+  expect(result).toBeNull();
+  expect(released).toBe(true);
+  const early = new AbortController();
+  let started = false;
+  released = false;
+  expect(await runLibraryScan<number>("books", early.signal, () => {}, {
+    subscribe: async () => { early.abort(); return () => { released = true; }; },
+    start: async () => { started = true; throw new Error("must not start"); },
+    cancel: async () => {},
+  })).toBeNull();
+  expect(started).toBe(false);
+  expect(released).toBe(true);
+});
 
 test("maps restored library books by relative path and leaves ambiguous matches unmapped", async () => {
   const mappings = mapBookPaths(

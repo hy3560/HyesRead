@@ -5,7 +5,7 @@ HyesRead 是一款把书架、阅读进度和阅读统计保存在本机的电�
 ## 功能
 
 - 阅读 EPUB、PDF、MOBI、AZW3/KF8、FB2/FBZ、CBZ、TXT 和 Markdown 文件。
-- 桌面版可以扫描本地文件夹；浏览器版可选择文件直接阅读。
+- Windows 可扫描本地文件夹，分批显示书籍并支持取消；浏览器版可选择文件直接阅读。
 - Android 手机可安装 APK；手机浏览器也可直接使用网页版本。
 - Windows 桌面版可浏览 OPDS/Calibre 目录（支持 HTTP Basic 账号验证）、进入分类、翻页并下载书籍到本地。需要登录的目录可在地址中填写 `https://用户名:密码@地址`；带账号密码的远程目录必须使用 HTTPS，仅 `localhost` / `127.0.0.1` / `::1` 的本机开发地址允许 HTTP。
 - 按书名和作者搜索、排序和管理书架。
@@ -27,6 +27,7 @@ HyesRead 是一款把书架、阅读进度和阅读统计保存在本机的电�
 Android ARM64 的签名 APK 与 Google Play AAB 会一起发布在 [GitHub Releases](https://github.com/hy3560/HyesRead/releases/latest)。APK 用于直接安装，AAB 用于 Google Play；签名密钥配置并完成验收后才会发布。多数近年的 Android 手机使用 ARM64。签名流程见[Android 发布说明](docs/android-release.md)。
 
 正式 Release 同时提供 `SHA256SUMS.txt`，用于核对 Windows EXE、Android APK 和 AAB 的下载完整性。
+Windows PowerShell 可运行 `./scripts/download-verified-release.ps1 -Tag v0.1.27`，将指定版本下载到 `dist/releases/版本号` 并核对摘要、大小和 SBOM；已存在但摘要不符的文件会报错并保留。
 同时提供 SPDX JSON `sbom.spdx.json` 软件物料清单；Pull Request 新增依赖会经过漏洞等级与许可证门禁，避免无意引入高危或强 copyleft 依赖。
 
 ### 浏览器版
@@ -71,8 +72,8 @@ pnpm test:e2e
 Windows 桌面端还可以直接启动 WebView2 并验证 EPUB 正文：
 
 ```powershell
-pnpm tauri build --bundles nsis
 pnpm test:native
 ```
 
 完整的 Windows 安装包构建由 GitHub Actions 在每次主分支更新和拉取请求时执行。
+原生验收会自行构建独立标识的测试应用，检查真实阅读、重启恢复、目录扫描与取消；测试产物不用于日常安装。扫描行为和验证范围见[本机书库扫描](docs/library-scanning.md)。

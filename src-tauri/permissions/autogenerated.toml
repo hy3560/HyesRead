@@ -3,6 +3,8 @@ identifier = "allow-library-commands"
 description = "允许扫描、导入和管理本地电子书"
 commands.allow = [
     "scan_library",
+    "scan_library_incremental",
+    "cancel_library_scan",
     "import_files",
     "read_text_book",
     "reveal_book",

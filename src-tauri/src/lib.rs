@@ -10,11 +10,11 @@ use base64::{Engine as _, engine::general_purpose};
 use walkdir::WalkDir;
 use rayon::prelude::*;
 use tauri::{Manager, State};
-#[cfg(desktop)]
 use tauri::Emitter;
 use tauri_plugin_fs::FsExt;
 
 mod opds;
+mod library_scan;
 
 #[derive(Default)]
 struct OpenFileQueue {
@@ -234,9 +234,8 @@ impl BookAdapter {
 
 #[tauri::command]
 async fn scan_library(folder_path: String) -> Result<Vec<BookMetadata>, String> {
-    let mut clean_path = folder_path.as_str();
-    if clean_path.starts_with(r"\\?\") { clean_path = &clean_path[4..]; }
-    let root = Path::new(clean_path.trim_matches('"'));
+    tauri::async_runtime::spawn_blocking(move || {
+    let root = Path::new(folder_path.trim_matches('"'));
 
     let entries = supported_book_files(root)?;
     let books: Vec<BookMetadata> = entries.into_par_iter()
@@ -244,6 +243,26 @@ async fn scan_library(folder_path: String) -> Result<Vec<BookMetadata>, String> 
         .collect();
 
     Ok(books)
+    }).await.map_err(|error| format!("书库扫描任务失败：{error}"))?
+}
+
+#[tauri::command]
+async fn scan_library_incremental(app: tauri::AppHandle, state: State<'_, library_scan::ScanRegistry>, folder_path: String, scan_id: String) -> Result<library_scan::ScanResult, String> {
+    let token = state.register(&scan_id)?;
+    let id = scan_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let path = folder_path.trim_matches('"');
+        library_scan::scan(PathBuf::from(path), id, &token, |batch| {
+            let _ = app.emit("hyesread:scan-progress", batch);
+        })
+    }).await.map_err(|error| format!("书库扫描任务失败：{error}"));
+    state.finish(&scan_id)?;
+    result?
+}
+
+#[tauri::command]
+fn cancel_library_scan(state: State<'_, library_scan::ScanRegistry>, scan_id: String) -> Result<bool, String> {
+    state.cancel(&scan_id)
 }
 
 fn supported_book_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -273,6 +292,7 @@ fn is_hidden(name: &std::ffi::OsStr) -> bool {
 
 #[tauri::command]
 async fn import_files(file_paths: Vec<String>) -> Result<Vec<BookMetadata>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     let books: Vec<BookMetadata> = file_paths.into_par_iter()
         .map(PathBuf::from)
         .filter(|p| p.is_file())
@@ -280,6 +300,7 @@ async fn import_files(file_paths: Vec<String>) -> Result<Vec<BookMetadata>, Stri
         .collect();
 
     Ok(books)
+    }).await.map_err(|error| format!("书籍导入任务失败：{error}"))?
 }
 
 #[tauri::command]
@@ -347,7 +368,8 @@ fn take_open_files(state: State<'_, OpenFileQueue>) -> Result<Vec<String>, Strin
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(OpenFileQueue::default())
-        .manage(DiagnosticLogLock::default());
+        .manage(DiagnosticLogLock::default())
+        .manage(library_scan::ScanRegistry::default());
 
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
@@ -372,7 +394,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            scan_library, 
+            scan_library,
+            scan_library_incremental,
+            cancel_library_scan,
             import_files, 
             read_text_book,
             open_book,
