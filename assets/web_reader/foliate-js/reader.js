@@ -135,6 +135,10 @@ class Reader {
         this.view.renderer.setAttribute('flow', this.flow)
         this.view.addEventListener('load', this.#onLoad.bind(this))
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
+        this.view.addEventListener('relocate', ({ detail }) => parent.postMessage({
+            type: 'hyesread:relocate',
+            location: { fraction: detail.fraction, location: detail.location?.current, href: detail.tocItem?.href, chapter: detail.tocItem?.label },
+        }, '*'))
 
         const { book } = this.view
         book.transformTarget?.addEventListener('data', ({ detail }) => {
@@ -144,14 +148,12 @@ class Reader {
             })
         })
         this.applyStyles()
-        this.view.renderer.next()
 
-        $('#header-bar').style.visibility = 'visible'
-        $('#nav-bar').style.visibility = 'visible'
         $('#left-button').addEventListener('click', () => this.view.goLeft())
         $('#right-button').addEventListener('click', () => this.view.goRight())
 
         const slider = $('#progress-slider')
+        slider.disabled = true
         slider.dir = book.dir
         slider.addEventListener('input', e =>
             this.view.goToFraction(parseFloat(e.target.value)))
@@ -213,6 +215,11 @@ class Reader {
                 annotation: { value: annotation.value, text: annotation.note || '' },
             }, '*')
         })
+        // Finish the initial section load before accepting saved-position navigation.
+        await this.view.renderer.next()
+        slider.disabled = false
+        $('#header-bar').style.visibility = 'visible'
+        $('#nav-bar').style.visibility = 'visible'
     }
     applyStyles() {
         const themes = {
@@ -376,10 +383,6 @@ const open = async file => {
     const reader = new Reader()
     globalThis.reader = reader
     try { await reader.open(file) } catch (error) { showError(error); return }
-    reader.view.addEventListener('relocate', ({ detail }) => parent.postMessage({
-        type: 'hyesread:relocate',
-        location: { fraction: detail.fraction, location: detail.location?.current, href: detail.tocItem?.href, chapter: detail.tocItem?.label },
-    }, '*'))
     parent.postMessage({ type: 'hyesread:ready' }, '*')
 }
 
