@@ -1,26 +1,30 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useDeferredValue, useEffect, useState, useMemo, useRef } from "react";
 import { invoke, isDesktop, readValue, updateValue, writeValue } from "../lib/platform";
-import { getBrowserBook, isBrowserBook, removeBrowserBook, saveBrowserBook } from "../lib/browserBooks";
+import { isBrowserBook, listBrowserBooks, removeBrowserBook, saveBrowserBook } from "../lib/browserBooks";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useRouter } from "next/navigation";
 import OpdsCatalog from "../components/OpdsCatalog";
 import { createBackup, downloadBackup, restoreBackup } from "../lib/backup";
+import { createDiagnosticReport, downloadDiagnosticReport, runSelfCheck } from "../lib/diagnostics";
+import { ensureDataSchema } from "../lib/dataSchema";
 import { mergeBookAddedAt, removeBookAddedAt, type BookAddedAt } from "../lib/bookOrder";
+import { filterAndSortBooks, type LibrarySortMode } from "../lib/libraryView";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Library, Settings2, Loader2, Ghost, Globe2,
   Clock, NotebookPen,
   HardDrive, FileType, FolderPlus, FilePlus, Book as BookIcon,
   BookOpen, Timer, Trophy, Activity, CalendarDays,
-  Search, List, Save, Download, Upload
+  Search, List, Save, Download, Upload, ShieldCheck, Bug
 } from "lucide-react";
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from "recharts";
 
 type ViewType = 'home' | 'library' | 'catalog' | 'stats' | 'settings';
+const LIBRARY_BATCH_SIZE = 84;
 
 interface Book {
   title: string; author: string; path: string; format: string; size: number; cover: string | null;
@@ -44,18 +48,15 @@ function mergeBooks(current: Book[], incoming: Book[]) {
 }
 
 async function loadBrowserBooks(paths: string[]): Promise<Book[]> {
-  const restored = await Promise.all(paths.filter(isBrowserBook).map(async path => {
-    const file = await getBrowserBook(path);
-    return file ? {
+  const restored = await listBrowserBooks(paths);
+  return restored.map(({ id: path, file }) => ({
       title: file.name.replace(/\.[^.]+$/, ""),
       author: "",
       path,
       format: file.name.split(".").pop()?.toUpperCase() || "BOOK",
       size: file.size / 1048576,
       cover: null,
-    } satisfies Book : null;
-  }));
-  return restored.filter((book): book is Book => book !== null);
+    } satisfies Book));
 }
 
 export default function HyesReadMaster() {
@@ -69,11 +70,38 @@ export default function HyesReadMaster() {
   const [isScanning, setIsScanning] = useState(false);
 
   const [query, setQuery] = useState("");
-  const [sortMode, setSortMode] = useState<"title" | "author" | "recent">("recent");
+  const deferredQuery = useDeferredValue(query);
+  const [sortMode, setSortMode] = useState<LibrarySortMode>("recent");
+  const [visibleBookCount, setVisibleBookCount] = useState(LIBRARY_BATCH_SIZE);
   const [lastOpenedBook, setLastOpenedBook] = useState("");
   const [operationError, setOperationError] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
+  const [diagnosticMessage, setDiagnosticMessage] = useState("");
   const backupInput = useRef<HTMLInputElement>(null);
+  const libraryLoadMoreRef = useRef<HTMLDivElement>(null);
+
+  const checkApplicationHealth = async () => {
+    setOperationError("");
+    setDiagnosticMessage("");
+    try {
+      const result = await runSelfCheck();
+      setDiagnosticMessage(result.summary);
+    } catch (error) {
+      setOperationError(`系统自检失败：${String(error)}`);
+    }
+  };
+
+  const exportDiagnostics = async () => {
+    setOperationError("");
+    setDiagnosticMessage("");
+    try {
+      const report = await createDiagnosticReport();
+      downloadDiagnosticReport(report);
+      setDiagnosticMessage("诊断报告已生成。报告不会自动上传，目录账号和用户主目录信息会进行脱敏。");
+    } catch (error) {
+      setOperationError(`生成诊断报告失败：${String(error)}`);
+    }
+  };
 
   const exportDataBackup = async () => {
     setOperationError("");
@@ -222,20 +250,30 @@ export default function HyesReadMaster() {
     };
   }, [books, sessions, chartRange]);
 
-  const filteredBooks = useMemo(() => {
-    const q = query.trim().toLocaleLowerCase();
-    return books
-      .filter(book => !q || `${book.title} ${book.author}`.toLocaleLowerCase().includes(q))
-      .sort((a, b) => sortMode === "title"
-        ? a.title.localeCompare(b.title) || a.path.localeCompare(b.path)
-        : sortMode === "author"
-          ? a.author.localeCompare(b.author) || a.title.localeCompare(b.title) || a.path.localeCompare(b.path)
-          : (bookAddedAt[b.path] ?? 0) - (bookAddedAt[a.path] ?? 0) || a.title.localeCompare(b.title) || a.path.localeCompare(b.path));
-  }, [books, bookAddedAt, query, sortMode]);
+  const filteredBooks = useMemo(() => filterAndSortBooks(books, bookAddedAt, deferredQuery, sortMode), [books, bookAddedAt, deferredQuery, sortMode]);
+  const visibleBooks = useMemo(() => filteredBooks.slice(0, visibleBookCount), [filteredBooks, visibleBookCount]);
+
+  useEffect(() => {
+    setVisibleBookCount(LIBRARY_BATCH_SIZE);
+  }, [deferredQuery, sortMode]);
+
+  useEffect(() => {
+    if (activeTab !== "library" || visibleBookCount >= filteredBooks.length) return;
+    const target = libraryLoadMoreRef.current;
+    if (!target || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setVisibleBookCount(current => Math.min(current + LIBRARY_BATCH_SIZE, filteredBooks.length));
+      }
+    }, { rootMargin: "800px 0px" });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [activeTab, filteredBooks.length, visibleBookCount]);
 
   useEffect(() => {
     (async () => {
       try {
+        await ensureDataSchema();
         const path = await readValue("hyes_master.json", "library_path", "");
         const discretePaths = await readValue<string[]>("hyes_master.json", "discrete_files", []);
         const excludedPaths = await readValue<string[]>("hyes_master.json", "excluded_files", []);
@@ -397,7 +435,7 @@ export default function HyesReadMaster() {
         </div>
       </nav>
 
-      <main className="flex-1 flex flex-col overflow-hidden relative">
+      <main id="main-content" tabIndex={-1} className="flex-1 flex flex-col overflow-hidden relative">
         <header className="h-24 flex items-center justify-between gap-2 px-12 border-b border-white/5 z-20 shrink-0 max-[640px]:px-4">
           <div>
             <h1 className="whitespace-nowrap text-2xl font-serif italic text-white max-[640px]:text-lg">Hyes Read</h1>
@@ -499,9 +537,10 @@ export default function HyesReadMaster() {
                     <Search size={16} /><input aria-label="搜索书名或作者" value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索书名或作者" className="w-full bg-transparent text-sm text-white outline-none placeholder:text-zinc-600" />
                   </label>
                   <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3 text-zinc-400"><List size={15} /><select aria-label="书籍排序" value={sortMode} onChange={e => setSortMode(e.target.value as typeof sortMode)} className="bg-transparent text-sm text-white outline-none"><option value="recent">最近加入</option><option value="title">按书名</option><option value="author">按作者</option></select></label>
+                  <span aria-live="polite" className="ml-auto text-xs text-zinc-500">显示 {Math.min(visibleBooks.length, filteredBooks.length)} / {filteredBooks.length} 本</span>
                 </div>
                 <motion.div key="grid" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-2 md:grid-cols-5 xl:grid-cols-7 gap-10">
-                {filteredBooks.length === 0 ? <EmptyState /> : filteredBooks.map(b => (
+                {filteredBooks.length === 0 ? <EmptyState /> : visibleBooks.map(b => (
                   <BookCard 
                     key={b.path} 
                     book={b} 
@@ -510,6 +549,11 @@ export default function HyesReadMaster() {
                   />
                 ))}
                 </motion.div>
+                {visibleBookCount < filteredBooks.length && (
+                  <div ref={libraryLoadMoreRef} className="flex justify-center pb-6 pt-2">
+                    <button type="button" onClick={() => setVisibleBookCount(current => Math.min(current + LIBRARY_BATCH_SIZE, filteredBooks.length))} className="rounded-xl border border-white/10 bg-white/[0.03] px-5 py-2.5 text-xs text-zinc-300 hover:bg-white/10">继续显示</button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -656,6 +700,17 @@ export default function HyesReadMaster() {
                   </div>
                   {backupMessage && <p role="status" className="text-sm text-emerald-300">{backupMessage}</p>}
                 </div>
+                <div className="bg-white/[0.02] border border-white/5 p-8 rounded-[2rem] space-y-5">
+                  <div>
+                    <h2 className="text-lg font-serif text-white">系统诊断</h2>
+                    <p className="mt-2 text-sm leading-6 text-zinc-400">HyesRead 会在本机保留有限数量的故障记录，Windows 与 Android 原生版同时写入限额日志。诊断报告只在你主动导出时生成，不会自动上传；目录账号和用户主目录信息会先脱敏。</p>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    <button type="button" onClick={() => void checkApplicationHealth()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black hover:bg-orange-400"><ShieldCheck size={16} />运行自检</button>
+                    <button type="button" onClick={() => void exportDiagnostics()} className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-zinc-200 hover:bg-white/10"><Bug size={16} />导出诊断</button>
+                  </div>
+                  {diagnosticMessage && <p role="status" className="text-sm text-emerald-300">{diagnosticMessage}</p>}
+                </div>
               </motion.div>
             )}
           </AnimatePresence>
@@ -673,7 +728,7 @@ function BookCard({ book, onOpen, onDelete }: { book: Book, onOpen: (path: strin
       <button type="button" aria-label={`打开《${book.title}》`} onClick={() => onOpen(book.path)} className="block w-full text-left">
         <div className="aspect-[3/4.2] bg-zinc-900 rounded-2xl overflow-hidden relative border border-white/5 group-hover:border-orange-500/40 transition-all shadow-lg group-hover:shadow-orange-500/10">
         {book.cover ? (
-          <img src={book.cover} className="w-full h-full object-cover" />
+          <img src={book.cover} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover" />
         ) : (
           <div className="h-full flex flex-col items-center justify-between p-6 bg-gradient-to-br from-zinc-800 to-black">
              <div className="w-full flex justify-between text-[8px] font-mono text-zinc-500">

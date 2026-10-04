@@ -1,6 +1,6 @@
 {
   "name": "hyes-read",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "private": true,
   "scripts": {
     "predev": "node scripts/copy-reader-assets.mjs --public",

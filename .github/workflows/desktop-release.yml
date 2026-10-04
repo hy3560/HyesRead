@@ -97,19 +97,37 @@ jobs:
             printf 'storeFile=%s\n' "$key_dir/release.jks"
             printf 'storePassword=%s\n' "$ANDROID_STORE_PASSWORD"
           } > src-tauri/gen/android/keystore.properties
-      - name: Build Android phone APK
-        run: pnpm exec tauri android build --apk --target aarch64 --ci
+      - name: Build Android APK and Play bundle
+        run: pnpm exec tauri android build --apk --aab --target aarch64 --ci
       - name: Verify Android APK signature
         run: |
           set -euo pipefail
           apk="$(find src-tauri/gen/android/app/build/outputs/apk/universal/release -maxdepth 1 -name '*.apk' -print -quit)"
           test -n "$apk"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk"
-      - name: Save Android installer
+      - name: Verify Android AAB signature
+        run: |
+          set -euo pipefail
+          aab="$(find src-tauri/gen/android/app/build/outputs/bundle/universalRelease -maxdepth 1 -name '*.aab' -print -quit)"
+          test -n "$aab"
+          verification="$(jarsigner -J-Duser.language=en -verify -verbose -certs "$aab")"
+          printf '%s\n' "$verification"
+          grep -q 'jar verified\.' <<< "$verification"
+      - name: Collect Android release files
+        run: |
+          set -euo pipefail
+          mkdir -p android-release-assets
+          mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk/universal/release -maxdepth 1 -name '*.apk' -type f)
+          mapfile -t aabs < <(find src-tauri/gen/android/app/build/outputs/bundle/universalRelease -maxdepth 1 -name '*.aab' -type f)
+          [[ ${#apks[@]} -eq 1 && ${#aabs[@]} -eq 1 ]]
+          cp "${apks[0]}" "${aabs[0]}" android-release-assets/
+      - name: Save Android release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+          name: android-release
+          path: |
+            android-release-assets/*.apk
+            android-release-assets/*.aab
           if-no-files-found: error
       - name: Remove Android release signing material
         if: always()
@@ -121,16 +139,32 @@ jobs:
       - windows
       - android
     steps:
+      - uses: actions/checkout@v4
+      - name: Prepare release metadata directory
+        run: mkdir -p release-assets
+      - name: Generate SPDX software bill of materials
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: release-assets/sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
       - name: Download verified Windows EXE installer
         uses: actions/download-artifact@v4
         with:
           name: windows-exe
           path: release-assets/windows
-      - name: Download verified Android installer
+      - name: Download verified Android artifacts
         uses: actions/download-artifact@v4
         with:
-          name: android-apk
+          name: android-release
           path: release-assets/android
+      - name: Generate release checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum release-assets/windows/*-setup.exe release-assets/android/*.apk release-assets/android/*.aab release-assets/sbom.spdx.json > release-assets/SHA256SUMS.txt
       - name: Publish complete release
         uses: softprops/action-gh-release@v3
         with:
@@ -138,9 +172,13 @@ jobs:
             HyesRead ${{ github.ref_name }} for Windows x64 and Android ARM64.
 
             Windows: download the setup EXE and follow the installer.
-            Android: download the APK and install it on an ARM64 Android phone.
+            Android: use the signed APK for direct installation or the signed AAB for Google Play distribution.
+            Supply chain: SHA-256 checksums and an SPDX JSON SBOM are included with every complete release.
           files: |
             release-assets/windows/*-setup.exe
             release-assets/android/*.apk
+            release-assets/android/*.aab
+            release-assets/SHA256SUMS.txt
+            release-assets/sbom.spdx.json
           overwrite_files: true
           fail_on_unmatched_files: true

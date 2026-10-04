@@ -261,6 +261,12 @@ fn is_same_origin_redirect(previous: &[Url], next: &Url) -> bool {
     })
 }
 
+fn is_loopback_url(url: &Url) -> bool {
+    let Some(host) = url.host_str() else { return false; };
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::IpAddr>().is_ok_and(|address| address.is_loopback())
+}
+
 fn client_for_url(raw_url: &str) -> Result<(reqwest::Client, Url), String> {
     let mut url = Url::parse(raw_url.trim()).map_err(|_| "目录地址无效".to_string())?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -279,7 +285,11 @@ fn client_for_url(raw_url: &str) -> Result<(reqwest::Client, Url), String> {
                 .map_err(|_| "目录账号信息编码无效".to_string())
         })
         .transpose()?;
-    if !username.is_empty() || password.is_some() {
+    let has_credentials = !username.is_empty() || password.is_some();
+    if has_credentials && url.scheme() == "http" && !is_loopback_url(&url) {
+        return Err("带账号密码的目录必须使用 HTTPS；仅 localhost/127.0.0.1/::1 允许 HTTP".to_string());
+    }
+    if has_credentials {
         url.set_username("")
             .map_err(|_| "目录地址无效".to_string())?;
         url.set_password(None)
@@ -504,6 +514,7 @@ mod tests {
     fn rejects_unsafe_catalog_urls_and_extracts_basic_credentials() {
         assert!(client_for_url("file:///C:/books").is_err());
         assert!(client_for_url("javascript:alert(1)").is_err());
+        assert!(client_for_url("http://reader:secret@example.com/opds").is_err());
         let (client, url) = client_for_url("https://reader:secret@example.com/opds").unwrap();
         assert_eq!(url.as_str(), "https://example.com/opds");
         assert!(client.get(url).build().is_ok());

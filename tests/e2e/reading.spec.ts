@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { mapBookPaths } from "../../src/lib/bookPaths";
 import { remapBackupPaths } from "../../src/lib/backupPaths";
 import { isMobileUserAgent } from "../../src/lib/platform";
+import { filterAndSortBooks } from "../../src/lib/libraryView";
 
 function createPdfFixture(pageCount = 1) {
   const objects = [
@@ -99,6 +100,25 @@ test("identifies phone runtimes separately from desktop Tauri", async () => {
   expect(isMobileUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/133 Safari/537.36")).toBe(false);
 });
 
+test("filters and sorts a 10k-book library deterministically", async () => {
+  const books = Array.from({ length: 10_000 }, (_, index) => ({
+    title: `Book ${String(index).padStart(5, "0")}${index % 250 === 0 ? " Enterprise" : ""}`,
+    author: `Author ${index % 400}`,
+    path: `/library/${index}.epub`,
+  }));
+  const addedAt = Object.fromEntries(books.map((book, index) => [book.path, index]));
+  const matches = filterAndSortBooks(books, addedAt, "enterprise", "recent");
+  expect(matches).toHaveLength(40);
+  expect(matches[0].path).toBe("/library/9750.epub");
+  expect(matches.at(-1)?.path).toBe("/library/0.epub");
+  const multiTerm = filterAndSortBooks(books, addedAt, "book 000 author 1", "title");
+  expect(multiTerm.length).toBeGreaterThan(0);
+  expect(multiTerm.every(book => {
+    const text = `${book.title} ${book.author}`.toLocaleLowerCase();
+    return ["book", "000", "author", "1"].every(term => text.includes(term));
+  })).toBe(true);
+});
+
 test("remaps every per-book backup record when a library moves", async () => {
   const source = "C:\\OldLibrary\\Novel.epub";
   const target = "D:\\Books\\Novel.epub";
@@ -128,6 +148,79 @@ test("keeps the empty shelf free of instructional copy", async ({ page }) => {
   await expect(page.getByText("书库还是空的，请先导入书籍", { exact: true })).toHaveCount(0);
 });
 
+test("supports keyboard focus transfer to the main application landmark", async ({ page }) => {
+  await page.goto("/");
+  await page.keyboard.press("Control+F10");
+  await expect(page.locator("#main-content")).toBeFocused();
+  const skipLink = page.getByRole("link", { name: "跳到主要内容" });
+  await skipLink.focus();
+  await expect(skipLink).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/#main-content$/);
+});
+
+test("migrates legacy local metadata once and keeps the migration idempotent", async ({ page }) => {
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem("hyesread-legacy-seeded")) return;
+    sessionStorage.setItem("hyesread-legacy-seeded", "1");
+    localStorage.setItem("hyes:hyes_master.json", JSON.stringify({
+      discrete_files: ["browser-book:legacy", "browser-book:legacy", 42],
+      excluded_files: ["C:\\Books\\removed.epub", "C:\\Books\\removed.epub", null],
+      book_added_at: { "browser-book:legacy": 123, broken: "not-a-number", negative: -1 },
+    }));
+  });
+  await page.goto("/");
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("hyes:hyes_system.json") || "{}").schema_version)).toBe(1);
+  const migrated = await page.evaluate(() => ({
+    master: JSON.parse(localStorage.getItem("hyes:hyes_master.json") || "{}"),
+    system: JSON.parse(localStorage.getItem("hyes:hyes_system.json") || "{}"),
+  }));
+  expect(migrated.master.discrete_files).toEqual(["browser-book:legacy"]);
+  expect(migrated.master.excluded_files).toEqual(["C:\\Books\\removed.epub"]);
+  expect(migrated.master.book_added_at).toEqual({ "browser-book:legacy": 123 });
+  expect(migrated.system.schema_version).toBe(1);
+
+  await page.reload();
+  const afterReload = await page.evaluate(() => JSON.parse(localStorage.getItem("hyes:hyes_master.json") || "{}"));
+  expect(afterReload.discrete_files).toEqual(["browser-book:legacy"]);
+  expect(afterReload.excluded_files).toEqual(["C:\\Books\\removed.epub"]);
+  expect(afterReload.book_added_at).toEqual({ "browser-book:legacy": 123 });
+});
+
+test("progressively renders a 100-book browser library instead of mounting every card", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const ids = Array.from({ length: 100 }, (_, index) => `browser-book:batch-${String(index).padStart(3, "0")}`);
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("hyesread-browser-books", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("books");
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const database = request.result;
+        const transaction = database.transaction("books", "readwrite");
+        const store = transaction.objectStore("books");
+        ids.forEach((id, index) => store.put(new File([`book-${index}`], `batch-${String(index).padStart(3, "0")}.txt`, { type: "text/plain" }), id));
+        transaction.oncomplete = () => { database.close(); resolve(); };
+        transaction.onerror = () => { database.close(); reject(transaction.error); };
+      };
+    });
+    localStorage.setItem("hyes:hyes_master.json", JSON.stringify({
+      discrete_files: ids,
+      excluded_files: [],
+      book_added_at: Object.fromEntries(ids.map((id, index) => [id, index + 1])),
+    }));
+  });
+  await page.reload();
+  await expect(page.getByText("显示 84 / 100 本", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^打开《batch-/ })).toHaveCount(84);
+  await page.evaluate(() => {
+    const button = Array.from(document.querySelectorAll("button")).find(element => element.textContent?.trim() === "继续显示") as HTMLButtonElement | undefined;
+    button?.click();
+  });
+  await expect(page.getByText("显示 100 / 100 本", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^打开《batch-/ })).toHaveCount(100);
+});
+
 test("exports a backup and merges imported reading data without replacing current progress", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("hyes:hyes_master.json", JSON.stringify({ discrete_files: ["browser-book:existing"] }));
@@ -148,9 +241,22 @@ test("exports a backup and merges imported reading data without replacing curren
   expect(downloadPath).not.toBeNull();
   const exported = JSON.parse(await readFile(downloadPath!, "utf8"));
   expect(exported.format).toBe("hyesread-backup");
+  expect(exported.version).toBe(2);
+  expect(exported.integrity).toMatchObject({ algorithm: "SHA-256" });
+  expect(exported.integrity.manifestSha256).toMatch(/^[a-f0-9]{64}$/);
   expect(exported.master.discreteFiles).toEqual(["browser-book:existing"]);
   expect(exported.readerData["hyes-reader-location:book.epub"]).toBe(JSON.stringify({ fraction: 0.25 }));
   expect(exported.catalogs).toEqual([{ name: "私人书库", url: "https://example.com/opds" }]);
+
+  const tamperedBackup = structuredClone(exported);
+  tamperedBackup.sessions[0].duration += 1;
+  await page.getByRole("button", { name: "导入并合并" }).click();
+  await page.locator('input[aria-label="选择 HyesRead 备份文件"]').setInputFiles({
+    name: "hyesread-backup-tampered.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(tamperedBackup)),
+  });
+  await expect(page.locator('div[role="alert"].mb-5')).toContainText("备份清单校验失败");
 
   const importedBackup = {
     format: "hyesread-backup",
@@ -239,6 +345,36 @@ test("portable browser-book backups restore the actual book after local storage 
   await expect(page.frameLocator("#foliate-reader").locator("foliate-view")).toBeVisible();
 });
 
+test("exports a bounded local diagnostic report with credential and home-path redaction", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    console.error("diagnostic-probe https://reader:secret@example.com/opds C:\\Users\\Alice\\books\\private.epub");
+    console.error(undefined);
+  });
+  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: "运行自检" }).click();
+  await expect(page.getByRole("status")).toContainText("书架记录 0");
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出诊断" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^hyesread-diagnostics-.*\.json$/);
+  const downloadPath = await download.path();
+  expect(downloadPath).not.toBeNull();
+  const reportText = await readFile(downloadPath!, "utf8");
+  const report = JSON.parse(reportText);
+  expect(report.format).toBe("hyesread-diagnostics");
+  expect(report.version).toBe(1);
+  expect(report.app.runtime).toBe("web");
+  expect(report.storage.schemaVersion).toBe(1);
+  expect(report.storage.recentDiagnosticCount).toBeLessThanOrEqual(80);
+  expect(report.recentEvents.some((event: { message: string }) => event.message === "undefined")).toBe(true);
+  expect(reportText).toContain("https://***:***@example.com/opds");
+  expect(reportText).toContain("C:\\\\Users\\\\***");
+  expect(reportText).not.toContain("reader:secret");
+  expect(reportText).not.toContain("Alice");
+});
+
 test("sorts browser imports by added time and keeps the order after reload", async ({ page }) => {
   await page.goto("/");
   for (const name of ["recent-order-older", "recent-order-newer"]) {
@@ -263,7 +399,11 @@ test("sorts browser imports by added time and keeps the order after reload", asy
 test("opens an uploaded PDF in the bundled reader", async ({ page }) => {
   const runtimeErrors: string[] = [];
   page.on("pageerror", error => runtimeErrors.push(error.message));
-  page.on("console", message => { if (message.type() === "error") runtimeErrors.push(message.text()); });
+  page.on("console", message => {
+    if (message.type() !== "error") return;
+    const location = message.location().url;
+    runtimeErrors.push(location ? `${message.text()} @ ${location}` : message.text());
+  });
 
   await page.goto("/");
   const chooserPromise = page.waitForEvent("filechooser");
@@ -646,7 +786,7 @@ test("opens a multi-page PDF and restores the selected page", async ({ page }) =
 
   const reader = page.frameLocator("#foliate-reader");
   await expect(reader.locator("foliate-view")).toBeVisible();
-  await expect(page.getByRole("button", { name: "搜索正文" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "搜索正文" })).toBeVisible();
   await expect.poll(() => reader.locator("body").evaluate(() => {
     const host = window as unknown as { reader?: { view?: { book?: { sections?: unknown[] } } } };
     return host.reader?.view?.book?.sections?.length;
