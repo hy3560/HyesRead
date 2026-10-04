@@ -41,7 +41,7 @@ jobs:
         with:
           targets: aarch64-linux-android
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec tauri android build --apk --target aarch64 --ci
+      - run: pnpm exec tauri android build --apk --aab --target aarch64 --ci
 
   frontend:
     runs-on: ubuntu-latest

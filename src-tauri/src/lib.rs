@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::fs::File;
-use std::io::Read;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::ffi::OsString;
 use std::sync::Mutex;
 use epub::doc::EpubDoc;
@@ -20,6 +20,82 @@ mod opds;
 struct OpenFileQueue {
     frontend_ready: Mutex<bool>,
     pending: Mutex<Vec<String>>,
+}
+
+#[derive(Default)]
+struct DiagnosticLogLock(Mutex<()>);
+
+#[derive(Serialize)]
+struct DiagnosticInfo {
+    app_version: String,
+    platform: String,
+    arch: String,
+    log_file: String,
+}
+
+fn normalize_client_field(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .filter(|character| *character == '\n' || *character == '\t' || !character.is_control())
+        .take(max_chars)
+        .collect()
+}
+
+fn diagnostic_log_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let directory = app.path().app_log_dir().map_err(|error| format!("无法取得日志目录: {error}"))?;
+    std::fs::create_dir_all(&directory).map_err(|error| format!("无法创建日志目录: {error}"))?;
+    Ok(directory.join("hyesread-client.jsonl"))
+}
+
+fn rotate_diagnostic_log(path: &Path) -> Result<(), String> {
+    const MAX_LOG_BYTES: u64 = 1024 * 1024;
+    let Ok(metadata) = std::fs::metadata(path) else { return Ok(()); };
+    if metadata.len() < MAX_LOG_BYTES { return Ok(()); }
+    let rotated = path.with_extension("jsonl.1");
+    if rotated.exists() {
+        std::fs::remove_file(&rotated).map_err(|error| format!("无法轮换旧日志: {error}"))?;
+    }
+    std::fs::rename(path, rotated).map_err(|error| format!("无法轮换日志: {error}"))
+}
+
+#[tauri::command]
+fn report_client_event(
+    app: tauri::AppHandle,
+    state: State<'_, DiagnosticLogLock>,
+    level: String,
+    message: String,
+    context: Option<String>,
+) -> Result<(), String> {
+    let _guard = state.0.lock().map_err(|_| "诊断日志锁不可用".to_string())?;
+    let path = diagnostic_log_path(&app)?;
+    rotate_diagnostic_log(&path)?;
+    let level = match level.as_str() {
+        "error" | "warn" | "info" => level,
+        _ => "info".to_string(),
+    };
+    let timestamp_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("系统时间不可用: {error}"))?
+        .as_millis();
+    let record = serde_json::json!({
+        "timestamp_unix_ms": timestamp_unix_ms,
+        "level": level,
+        "context": normalize_client_field(context.as_deref().unwrap_or("app"), 200),
+        "message": normalize_client_field(&message, 12_000),
+    });
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)
+        .map_err(|error| format!("无法打开诊断日志: {error}"))?;
+    writeln!(file, "{}", record).map_err(|error| format!("无法写入诊断日志: {error}"))
+}
+
+#[tauri::command]
+fn diagnostic_info(app: tauri::AppHandle) -> Result<DiagnosticInfo, String> {
+    Ok(DiagnosticInfo {
+        app_version: app.package_info().version.to_string(),
+        platform: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        log_file: diagnostic_log_path(&app)?.to_string_lossy().into_owned(),
+    })
 }
 
 fn supported_book_path(path: &Path, cwd: &Path) -> Option<String> {
@@ -127,12 +203,14 @@ impl BookAdapter {
     }
 
     fn parse_cbz(p: &Path, stem: String, ps: String, size: f64) -> BookMetadata {
+        const MAX_EMBEDDED_COVER_BYTES: u64 = 2 * 1024 * 1024;
         if let Ok(file) = File::open(p) {
             if let Ok(mut archive) = zip::ZipArchive::new(file) {
                 for i in 0..archive.len() {
                     if let Ok(mut f) = archive.by_index(i) {
                         let name = f.name().to_lowercase();
                         if name.ends_with(".jpg") || name.ends_with(".png") || name.ends_with(".jpeg") {
+                            if f.size() > MAX_EMBEDDED_COVER_BYTES { continue; }
                             let mut buf = Vec::new();
                             if f.read_to_end(&mut buf).is_ok() {
                                 let b64 = general_purpose::STANDARD.encode(&buf);
@@ -267,7 +345,9 @@ fn take_open_files(state: State<'_, OpenFileQueue>) -> Result<Vec<String>, Strin
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().manage(OpenFileQueue::default());
+    let builder = tauri::Builder::default()
+        .manage(OpenFileQueue::default())
+        .manage(DiagnosticLogLock::default());
 
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
@@ -300,7 +380,9 @@ pub fn run() {
             prepare_book_read,
             take_open_files,
             fetch_opds_feed,
-            download_opds_book
+            download_opds_book,
+            report_client_event,
+            diagnostic_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -308,7 +390,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{supported_book_files, supported_book_path};
+    use super::{normalize_client_field, supported_book_files, supported_book_path};
     use std::path::Path;
 
     #[test]
@@ -347,5 +429,11 @@ mod tests {
         assert_eq!(found, vec![nested_book]);
 
         std::fs::remove_dir_all(root).expect("remove temporary book directory");
+    }
+
+    #[test]
+    fn diagnostic_fields_are_bounded_and_drop_control_characters() {
+        let value = normalize_client_field("abc\u{0}def\nxyz", 8);
+        assert_eq!(value, "abcdef\nx");
     }
 }

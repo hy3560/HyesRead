@@ -5,13 +5,15 @@ import { remapBackupPaths } from "./backupPaths";
 import { isBrowserBook, listBrowserBooks, saveBrowserBooks } from "./browserBooks";
 
 const FORMAT = "hyesread-backup";
-const VERSION = 1;
+const VERSION = 2;
+const LEGACY_VERSIONS = new Set([1, VERSION]);
 const MAX_BACKUP_BYTES = 2 * 1024 * 1024 * 1024;
 const READER_KEY_PREFIXES = ["hyes-reader-location:", "hyes-bookmarks:", "hyes-highlights:", "hyesread:"];
 
 type ReadingSession = { date: string; duration: number; bookPath: string };
 type CatalogSource = { name: string; url: string };
 type BrowserBookBackup = { id: string; name: string; type: string; data: string; sha256?: string };
+type BackupIntegrity = { algorithm: "SHA-256"; manifestSha256: string };
 
 type BackupFile = {
   format: typeof FORMAT;
@@ -22,6 +24,7 @@ type BackupFile = {
   catalogs: CatalogSource[];
   readerData: Record<string, string>;
   browserBooks?: BrowserBookBackup[];
+  integrity?: BackupIntegrity;
 };
 
 type PortableBackupFile = BackupFile;
@@ -33,6 +36,40 @@ const strings = (value: unknown): string[] => Array.isArray(value) ? value.filte
 const timestamps = (value: unknown): BookAddedAt => isObject(value)
   ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[0] === "string" && Number.isFinite(entry[1]) && Number(entry[1]) >= 0))
   : {};
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (!isObject(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .filter(key => value[key] !== undefined)
+      .sort()
+      .map(key => [key, canonicalize(value[key])]),
+  );
+}
+
+function backupManifest(backup: BackupFile) {
+  return {
+    format: backup.format,
+    version: backup.version,
+    exportedAt: backup.exportedAt,
+    master: backup.master,
+    sessions: backup.sessions,
+    catalogs: backup.catalogs,
+    readerData: backup.readerData,
+    browserBooks: (backup.browserBooks || []).map(book => ({
+      id: book.id,
+      name: book.name,
+      type: book.type,
+      sha256: book.sha256 || "",
+    })),
+  };
+}
+
+async function manifestSha256(backup: BackupFile) {
+  const encoded = new TextEncoder().encode(JSON.stringify(canonicalize(backupManifest(backup))));
+  return sha256(encoded);
+}
 
 function catalogForBackup(source: CatalogSource): CatalogSource {
   try {
@@ -83,6 +120,7 @@ export async function createBackup(): Promise<PortableBackupFile> {
     const data = await blobToBase64(file);
     backup.browserBooks.push({ id, name: file.name, type: file.type, data, sha256: await sha256(base64ToBytes(data)) });
   }
+  backup.integrity = { algorithm: "SHA-256", manifestSha256: await manifestSha256(backup) };
   return backup;
 }
 
@@ -108,9 +146,10 @@ function base64ToBytes(value: string): Uint8Array {
 }
 
 function parseBackup(value: unknown): BackupFile {
-  if (!isObject(value) || value.format !== FORMAT || value.version !== VERSION) {
+  if (!isObject(value) || value.format !== FORMAT || typeof value.version !== "number" || !LEGACY_VERSIONS.has(value.version)) {
     throw new Error("备份文件格式或版本不受支持");
   }
+  const version = value.version;
   if (!isObject(value.master) || !Array.isArray(value.sessions) || !Array.isArray(value.catalogs) || !isObject(value.readerData)) {
     throw new Error("备份文件内容不完整");
   }
@@ -130,8 +169,20 @@ function parseBackup(value: unknown): BackupFile {
   if (!Array.isArray(browserBooks) || !browserBooks.every(item => isObject(item)
     && typeof item.id === "string" && isBrowserBook(item.id)
     && typeof item.name === "string" && typeof item.type === "string" && typeof item.data === "string"
-    && (item.sha256 === undefined || (typeof item.sha256 === "string" && /^[a-f0-9]{64}$/i.test(item.sha256))))) {
+    && (version === 1
+      ? item.sha256 === undefined || (typeof item.sha256 === "string" && /^[a-f0-9]{64}$/i.test(item.sha256))
+      : typeof item.sha256 === "string" && /^[a-f0-9]{64}$/i.test(item.sha256)))) {
     throw new Error("备份中的书籍文件格式无效");
+  }
+  let integrity: BackupIntegrity | undefined;
+  if (version >= 2) {
+    if (!isObject(value.integrity)
+      || value.integrity.algorithm !== "SHA-256"
+      || typeof value.integrity.manifestSha256 !== "string"
+      || !/^[a-f0-9]{64}$/i.test(value.integrity.manifestSha256)) {
+      throw new Error("备份完整性信息缺失或无效");
+    }
+    integrity = { algorithm: "SHA-256", manifestSha256: value.integrity.manifestSha256.toLowerCase() };
   }
   const ids = new Set<string>();
   for (const item of browserBooks) {
@@ -148,7 +199,7 @@ function parseBackup(value: unknown): BackupFile {
   }
   return {
     format: FORMAT,
-    version: VERSION,
+    version,
     exportedAt: typeof value.exportedAt === "string" ? value.exportedAt : "",
     master: {
       libraryPath: typeof value.master.libraryPath === "string" ? value.master.libraryPath : "",
@@ -161,6 +212,7 @@ function parseBackup(value: unknown): BackupFile {
     catalogs: value.catalogs as CatalogSource[],
     readerData,
     browserBooks: browserBooks as PortableBackupFile["browserBooks"],
+    integrity,
   };
 }
 
@@ -248,6 +300,11 @@ export async function restoreBackup(text: string, selectedLibraryPath = ""): Pro
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { throw new Error("无法解析备份文件"); }
   const backup = parseBackup(parsed);
+  if (backup.version >= 2) {
+    const expectedManifest = backup.integrity?.manifestSha256;
+    const actualManifest = await manifestSha256(backup);
+    if (!expectedManifest || actualManifest !== expectedManifest) throw new Error("备份清单校验失败，文件可能已损坏或被修改");
+  }
   const totalBookBytes = (backup.browserBooks || []).reduce((total, book) => total + Math.floor(book.data.length * 3 / 4), 0);
   if (new TextEncoder().encode(text).byteLength + totalBookBytes > MAX_BACKUP_BYTES) throw new Error("备份文件超过 2 GB 限制");
   for (const book of backup.browserBooks || []) {
