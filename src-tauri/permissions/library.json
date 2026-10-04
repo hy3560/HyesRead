@@ -4,6 +4,8 @@
   "description": "允许前端调用本地书库功能",
   "commands": [
     "scan_library",
+    "scan_library_incremental",
+    "cancel_library_scan",
     "import_files",
     "read_text_book",
     "reveal_book",

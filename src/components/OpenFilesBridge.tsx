@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { listen } from "@tauri-apps/api/event";
 import { invoke, isDesktop, updateValue, writeValue } from "../lib/platform";
 import { mergeBookAddedAt, type BookAddedAt } from "../lib/bookOrder";
+import { ensureDataSchema } from "../lib/dataSchema";
 
 interface ImportedBook {
   path: string;
@@ -26,6 +27,7 @@ export default function OpenFilesBridge() {
           const uniquePaths = Array.from(new Set(paths.filter(path => path.trim().length > 0)));
           if (!uniquePaths.length) return;
 
+          await ensureDataSchema();
           const books = await invoke<ImportedBook[]>("import_files", { filePaths: uniquePaths });
           if (!books.length) return;
 
