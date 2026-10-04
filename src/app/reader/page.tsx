@@ -6,7 +6,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { invoke, isDesktop, updateValue, writeValue } from "../../lib/platform";
 import { getBrowserBook, isBrowserBook } from "../../lib/browserBooks";
 
-type ReaderLocation = { fraction: number; location?: number; href?: string; chapter?: string };
+type ReaderLocation = { fraction: number; location?: number; href?: string; chapter?: string; cfi?: string };
 type Bookmark = { id: string; label: string; location: ReaderLocation; createdAt: number };
 type Highlight = { id: string; value: string; text: string; note: string; color: string; createdAt: number };
 type TextSelection = { value: string; text: string };
@@ -57,6 +57,7 @@ function ReaderContent() {
     let reportTime: (() => void) | undefined;
     const key = `hyes-reader-location:${path}`;
     let initialLocation: ReaderLocation | null = null;
+    let readerHasInitialized = false;
     try {
       const stored = JSON.parse(localStorage.getItem(key) || "null");
       if (Number.isFinite(stored?.fraction) && stored.fraction >= 0 && stored.fraction <= 1) initialLocation = stored;
@@ -207,12 +208,13 @@ function ReaderContent() {
       if (event.source !== frame.contentWindow) return;
       if (event.data?.type === "hyesread:relocate") {
         try {
-          localStorage.setItem(key, JSON.stringify(event.data.location));
+          if (readerHasInitialized || !initialLocation) localStorage.setItem(key, JSON.stringify(event.data.location));
           setCurrentLocation(event.data.location);
         } catch (e) {
           setError(`无法保存阅读位置：${e}`);
         }
       } else if (event.data?.type === "hyesread:ready") {
+        readerHasInitialized = true;
         setReaderReady(true);
         startReadingTimer();
         frame.contentWindow?.postMessage({ type: "hyesread:restore", location: initialLocation }, "*");

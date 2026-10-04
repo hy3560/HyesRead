@@ -342,7 +342,13 @@ test("portable browser-book backups restore the actual book after local storage 
   await page.getByRole("button", { name: "书架" }).click();
   await expect(page.getByRole("button", { name: "打开《hyesread-acceptance》" })).toBeVisible();
   await page.getByRole("button", { name: "打开《hyesread-acceptance》" }).click();
-  await expect(page.frameLocator("#foliate-reader").locator("foliate-view")).toBeVisible();
+  // The dev server compiles the reader route on its first navigation.
+  await expect(page).toHaveURL(/\/reader\?path=/, { timeout: 15_000 });
+  await expect(page.frameLocator("#foliate-reader").locator("foliate-view")).toBeVisible({ timeout: 10_000 });
+  await expect.poll(async () => {
+    const chapter = page.frames().find(frame => frame.url().startsWith("blob:"));
+    try { return chapter ? await chapter.locator("body").innerText() : ""; } catch { return ""; }
+  }, { timeout: 10_000 }).toContain("这是用于检查离线 EPUB 阅读路径的测试内容。");
 });
 
 test("exports a bounded local diagnostic report with credential and home-path redaction", async ({ page }) => {
@@ -554,10 +560,24 @@ test("restores a later chapter in a multi-chapter EPUB after reload", async ({ p
     try { return frame ? await frame.locator("body").innerText() : ""; } catch { return ""; }
   };
   await expect.poll(chapterText).toContain("CHAPTER-5-PARAGRAPH-1");
+  expect(saved.cfi).toMatch(/^epubcfi\(/);
+  for (let reload = 0; reload < 3; reload++) {
+    await page.reload();
+    await expect.poll(chapterText).toContain("CHAPTER-5-PARAGRAPH-1");
+    await expect.poll(async () => (await readLocation())?.href).toBe(saved.href);
+    await expect.poll(async () => (await readLocation())?.location).toBe(saved.location);
+    await expect.poll(async () => Math.abs((await readLocation())?.fraction - saved.fraction)).toBeLessThan(0.000001);
+  }
+  // Existing backups have only a fraction; opening them must still restore the chapter.
+  await page.evaluate(() => {
+    const key = `hyes-reader-location:${new URLSearchParams(location.search).get("path")}`;
+    const legacy = JSON.parse(localStorage.getItem(key) || "null");
+    delete legacy.cfi;
+    localStorage.setItem(key, JSON.stringify(legacy));
+  });
   await page.reload();
   await expect.poll(chapterText).toContain("CHAPTER-5-PARAGRAPH-1");
-  await expect.poll(async () => (await readLocation())?.href).toBe(saved.href);
-  await expect.poll(async () => Math.abs((await readLocation())?.fraction - saved.fraction)).toBeLessThan(0.02);
+  await expect.poll(async () => (await readLocation())?.cfi).toMatch(/^epubcfi\(/);
 });
 
 test("saves EPUB reading layout and appearance settings", async ({ page }) => {

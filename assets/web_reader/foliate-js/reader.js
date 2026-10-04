@@ -137,7 +137,7 @@ class Reader {
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
         this.view.addEventListener('relocate', ({ detail }) => parent.postMessage({
             type: 'hyesread:relocate',
-            location: { fraction: detail.fraction, location: detail.location?.current, href: detail.tocItem?.href, chapter: detail.tocItem?.label },
+            location: { fraction: detail.fraction, location: detail.location?.current, href: detail.tocItem?.href, chapter: detail.tocItem?.label, cfi: detail.cfi },
         }, '*'))
 
         const { book } = this.view
@@ -406,12 +406,21 @@ $('#file-button').addEventListener('click', () => $('#file-input').click())
 
 const params = new URLSearchParams(location.search)
 const url = params.get('url')
+const restoreLocation = async location => {
+    const view = globalThis.reader?.view
+    if (!view || !Number.isFinite(location?.fraction)) return
+    if (!view.isFixedLayout && typeof location.cfi === 'string' && location.cfi.startsWith('epubcfi(')) {
+        const resolved = await view.goTo(location.cfi)
+        if (resolved) return
+    }
+    await view.goToFraction(Math.min(1, Math.max(0, location.fraction)))
+}
 addEventListener('message', event => {
     if (event.source !== parent || !event.data) return
     if (event.data.type === 'hyesread:open-file' && event.data.file)
         open(event.data.file).catch(showError)
     if (event.data.type === 'hyesread:restore' && event.data.location?.fraction != null)
-        globalThis.reader?.view?.goToFraction(event.data.location.fraction).catch(console.error)
+        restoreLocation(event.data.location).catch(showError)
     if (event.data.type === 'hyesread:annotations' && Array.isArray(event.data.annotations)) {
         const current = globalThis.reader
         if (!current?.view) return
