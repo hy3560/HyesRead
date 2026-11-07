@@ -4,7 +4,7 @@ HyesRead 是一款把书架、阅读进度和阅读统计保存在本机的电�
 
 ## Windows 和 Android（Flutter 版，2026-11-07）
 
-[下载 Windows 便携包和 Android APK](https://github.com/hy3560/HyesRead/releases/tag/flutter-20261107.1)。这是当前 Windows 和 Android 版本，与下方原有 Tauri / 网页版分别安装和存储；书库与阅读进度不会自动迁移，功能也并非完全相同。Flutter 源码位于 [flutter-ui](flutter-ui/)。
+[下载 Windows 便携包和 Android APK](https://github.com/hy3560/HyesRead/releases/tag/flutter-20261107.2)。这是当前 Windows 和 Android 版本，与下方原有 Tauri / 网页版分别安装和存储；书库与阅读进度不会自动迁移，功能也并非完全相同。Flutter 源码位于 [flutter-ui](flutter-ui/)。
 
 - **Windows x64：** 下载 `HyesRead-Windows-x64-clean-bilingual-20261107.zip`，完整解压后运行 `HyesRead.exe`，保留同目录的 DLL 和 `data` 文件夹。此包未签名、没有安装器或自动更新；缺少运行库时可能需要 Visual C++ 2015–2022 x64 运行库。
 - **Android：** 下载 `app-release.apk` 并安装。包名为 `com.hyes.hyesread_flutter`，与旧版独立；此 APK 使用调试密钥签名，并非应用商店签名版。Android 可能要求允许从当前来源安装应用。

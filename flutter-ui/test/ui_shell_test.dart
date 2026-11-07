@@ -105,11 +105,9 @@ void main() {
     }
     // Match production Material icons as well. Flutter's golden test font
     // substitutes missing icon glyphs with squares without this asset.
-    final icons = File(
-      '.flutter_sdk/bin/cache/artifacts/material_fonts/'
-      'MaterialIcons-Regular.otf').readAsBytesSync();
+    final icons = await rootBundle.load('fonts/MaterialIcons-Regular.otf');
     await (FontLoader('MaterialIcons')
-      ..addFont(Future.value(ByteData.sublistView(icons)))).load();
+      ..addFont(Future.value(icons))).load();
   });
 
   test('TXT search returns the reader stable UTF-16 paragraph anchor',
