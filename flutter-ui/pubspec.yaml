@@ -1,0 +1,50 @@
+name: hyesread_flutter
+description: Independent Flutter UI for HyesRead, preserving the existing release.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Dart 3.13-compatible MIT-maintained implementation of Phosphor icons.
+  phosphoricons_flutter: 1.1.1
+  # Android-only MIT plugin. Best effort; no high-Hz promise for LTPO devices.
+  flutter_displaymode: 0.7.0
+  # User-approved animation stack (2026-11-04). BSD-3-Clause packages.
+  flutter_animate: 4.5.2
+  flutter_custom_carousel: 0.1.0+1
+  # MIT Rive runtime; actual .riv assets must have independently cleared use.
+  rive: 0.14.11
+  # Impeller lens refraction, rim glint and material fallback.
+  liquid_glass_renderer: 1.0.0-dev.2
+  crypto: ^3.0.6
+  characters: ^1.4.1
+  # In-memory EPUB display normalization; never modifies the original file.
+  archive: 4.6.0
+  # MIT upstream 0.1.0 vendored solely for EPUB CJK punctuation and headings.
+  epub_rtl:
+    path: third_party/epub_rtl
+  file_picker: 10.3.10
+  # Apache-2.0. Native Windows/macOS/Linux book file drop, not a fake target.
+  desktop_drop: 0.8.4
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  pdfrx: 2.4.8
+  scrollable_positioned_list: ^0.3.8
+  shared_preferences: ^2.5.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  fonts:
+    - family: HyesSerifSC
+      fonts:
+        - asset: assets/fonts/HyesSerifSC-SemiBold.ttf
+          weight: 600
