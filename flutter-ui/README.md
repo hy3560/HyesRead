@@ -23,12 +23,12 @@ HyesRead 是一款以本地藏书和舒适阅读为中心的应用。这个 Flut
 需要 Flutter SDK、相应平台工具链和 Android SDK（构建 Android 时）。在本目录执行：
 
 ```sh
-flutter pub get
+flutter pub get --enforce-lockfile
 flutter test
 flutter build apk --release
 ```
 
-Windows 可使用 `flutter build windows --release`；项目内 `tool/build_windows_portable.ps1` 是原开发环境的辅助脚本，依赖项目内 `.flutter_sdk` 和脚本指定的 Visual Studio 2022 Community 路径，换环境时需调整。
+Windows 的 Flutter 插件需要符号链接支持，普通构建可能要求启用开发者模式；缺少该权限时 `flutter pub get` 可能在解析依赖后失败。可使用 `flutter build windows --release`；项目内 `tool/build_windows_portable.ps1` 是原开发环境的辅助脚本，依赖项目内 `.flutter_sdk` 和脚本指定的 Visual Studio 2022 Community 路径，换环境时需调整。指定其他 pub 镜像或 SDK 版本可能导致锁文件无法严格复用，应先核对配置，不要静默升级依赖。
 
 ## 当前限制
 

@@ -4,7 +4,7 @@ HyesRead is a local e-book reader that keeps your library, reading position, and
 
 ## Flutter for Windows and Android (2026-11-07)
 
-[Download the Windows portable ZIP and Android APK](https://github.com/hy3560/HyesRead/releases/tag/flutter-20261107). This is the current Windows and Android edition, installed and stored separately from the Tauri and web editions below. Libraries and reading positions are not migrated automatically, and feature sets differ. Flutter source is in [flutter-ui](flutter-ui/).
+[Download the Windows portable ZIP and Android APK](https://github.com/hy3560/HyesRead/releases/tag/flutter-20261107.1). This is the current Windows and Android edition, installed and stored separately from the Tauri and web editions below. Libraries and reading positions are not migrated automatically, and feature sets differ. Flutter source is in [flutter-ui](flutter-ui/).
 
 - **Windows x64:** Download `HyesRead-Windows-x64-clean-bilingual-20261107.zip`, extract the entire archive, and run `HyesRead.exe`. Keep the DLL files and `data` folder together. This package is unsigned and has no installer or automatic updates; the Visual C++ 2015–2022 x64 runtime may be required.
 - **Android:** Download and install `app-release.apk`. Its package ID is `com.hyes.hyesread_flutter`, separate from the older app. It is signed with a debug key, not a production store key. Android may ask you to allow installation from the download source.
