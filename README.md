@@ -2,15 +2,15 @@
 
 HyesRead 是一款把书架、阅读进度和阅读统计保存在本机的电子书阅读器。
 
-## Flutter 双平台预览版（2026-11-07）
+## Windows 和 Android（Flutter 版，2026-11-07）
 
-[下载 Windows 便携包和 Android APK](https://github.com/hy3560/HyesRead/releases/tag/flutter-preview-20261107)。这是独立的 Flutter 预览版，与下方原有 Tauri / 网页版分别安装和存储；书库与阅读进度不会自动迁移，功能也并非完全相同。
+[下载 Windows 便携包和 Android APK](https://github.com/hy3560/HyesRead/releases/tag/flutter-20261107)。这是当前 Windows 和 Android 版本，与下方原有 Tauri / 网页版分别安装和存储；书库与阅读进度不会自动迁移，功能也并非完全相同。Flutter 源码位于 [flutter-ui](flutter-ui/)。
 
-- **Windows x64：** 下载 `HyesRead-Windows-x64-clean-bilingual-20261107.zip`，完整解压后运行 `HyesRead.exe`，保留同目录的 DLL 和 `data` 文件夹。此预览包未签名、没有安装器或自动更新；缺少运行库时可能需要 Visual C++ 2015–2022 x64 运行库。
-- **Android：** 下载 `app-release.apk` 并安装。包名为 `com.hyes.hyesread_flutter`，与旧版独立；此 APK 使用调试密钥签名，仅供预览和测试，不是应用商店正式签名版。Android 可能要求允许从当前来源安装应用。
+- **Windows x64：** 下载 `HyesRead-Windows-x64-clean-bilingual-20261107.zip`，完整解压后运行 `HyesRead.exe`，保留同目录的 DLL 和 `data` 文件夹。此包未签名、没有安装器或自动更新；缺少运行库时可能需要 Visual C++ 2015–2022 x64 运行库。
+- **Android：** 下载 `app-release.apk` 并安装。包名为 `com.hyes.hyesread_flutter`，与旧版独立；此 APK 使用调试密钥签名，并非应用商店签名版。Android 可能要求允许从当前来源安装应用。
 - 支持导入和管理本地 TXT、Markdown、EPUB、PDF，继续阅读、书签和阅读位置；TXT / Markdown 支持正文搜索，EPUB 有目录，PDF 支持页码定位。可调整阅读显示，支持简体中文和英语界面；书籍原文不会翻译，少数第三方界面或系统提示可能未本地化。
-- TXT / Markdown 使用 UTF-8，单本上限 20 MiB；EPUB 单本上限 50 MiB。EPUB 和 PDF 暂无书内全文搜索；复杂 EPUB 排版及不同设备表现仍需实际验证。此预览版尚不具备旧版全部格式、OPDS、批注和数据迁移能力。
-- 下载后可用该预发布中的 `SHA256SUMS.txt` 核对文件完整性。重要书籍请保留原件备份。
+- TXT / Markdown 使用 UTF-8，单本上限 20 MiB；EPUB 单本上限 50 MiB。EPUB 和 PDF 暂无书内全文搜索；复杂 EPUB 排版及不同设备表现仍需实际验证。Flutter 版尚不具备旧版全部格式、OPDS、批注和数据迁移能力。
+- 下载后可用发布页中的 `SHA256SUMS.txt` 核对文件完整性。重要书籍请保留原件备份。
 
 以下功能与构建说明针对原有 Tauri / 网页版，除非另有说明。
 
@@ -32,13 +32,13 @@ HyesRead 是一款把书架、阅读进度和阅读统计保存在本机的电�
 
 ### Windows 安装版
 
-在 [GitHub Releases](https://github.com/hy3560/HyesRead/releases/latest) 下载 Windows x64 安装包。也可以继续按下方步骤从源码运行。
+旧版 Tauri Windows x64 安装包可在 [v0.1.29 发布页](https://github.com/hy3560/HyesRead/releases/tag/v0.1.29)下载。也可以继续按下方步骤从源码运行。
 
 ### Android 安装版
 
-Android ARM64 的签名 APK 与 Google Play AAB 会一起发布在 [GitHub Releases](https://github.com/hy3560/HyesRead/releases/latest)。APK 用于直接安装，AAB 用于 Google Play；签名密钥配置并完成验收后才会发布。多数近年的 Android 手机使用 ARM64。签名流程见[Android 发布说明](docs/android-release.md)。
+旧版 Android ARM64 APK 和 AAB 可在 [v0.1.29 发布页](https://github.com/hy3560/HyesRead/releases/tag/v0.1.29)下载。APK 用于直接安装，AAB 用于 Google Play。签名流程见[Android 发布说明](docs/android-release.md)。
 
-正式 Release 同时提供 `SHA256SUMS.txt`，用于核对 Windows EXE、Android APK 和 AAB 的下载完整性。
+旧版 v0.1.29 同时提供 `SHA256SUMS.txt`，用于核对 Windows EXE、Android APK 和 AAB 的下载完整性。
 Windows PowerShell 可运行 `./scripts/download-verified-release.ps1 -Tag v0.1.27`，将指定版本下载到 `dist/releases/版本号` 并核对摘要、大小和 SBOM；已存在但摘要不符的文件会报错并保留。
 同时提供 SPDX JSON `sbom.spdx.json` 软件物料清单；Pull Request 新增依赖会经过漏洞等级与许可证门禁，避免无意引入高危或强 copyleft 依赖。
 

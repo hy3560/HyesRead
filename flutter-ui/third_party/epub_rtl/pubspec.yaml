@@ -1,0 +1,29 @@
+name: epub_rtl
+description: >-
+  Pure-Flutter EPUB 2/3 parser and reader with right-to-left support for
+  Arabic books: page-progression-direction, dir, bidi, paginated RTL paging.
+version: 0.1.0
+homepage: https://abdeldjalilchougui.biz/
+repository: https://github.com/AbdeldjalilChougui/epub_rtl
+issue_tracker: https://github.com/AbdeldjalilChougui/epub_rtl/issues
+topics:
+  - epub
+  - ebook
+  - reader
+  - rtl
+  - arabic
+
+environment:
+  sdk: ^3.5.0
+  flutter: ">=3.24.0"
+
+dependencies:
+  archive: ^4.0.0
+  flutter:
+    sdk: flutter
+  xml: ^6.5.0
+
+dev_dependencies:
+  flutter_lints: ^5.0.0
+  flutter_test:
+    sdk: flutter
