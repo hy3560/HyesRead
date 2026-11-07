@@ -19,7 +19,7 @@ The features and build instructions below describe the existing Tauri / web edit
 - Read EPUB, PDF, MOBI, AZW3/KF8, FB2/FBZ, CBZ, TXT, and Markdown files.
 - Scan local folders in the desktop app, or add books directly in a browser.
 - Install the Android APK on a phone, or use the web app in a mobile browser.
-- Browse OPDS/Calibre catalogs, open categories, paginate, and download books in the Windows desktop app. HTTP Basic authentication is supported with `https://username:password@host`; saved catalog URLs stay on this device, so use HTTPS to protect credentials.
+- Browse OPDS/Calibre catalogs, open categories, paginate, and download books in the Windows desktop app. Enter usernames and passwords separately; credentials are stored in Windows Credential Manager. Authenticated remote catalogs require HTTPS; HTTP is permitted for loopback addresses. See the [credential notes](docs/opds-credentials.md).
 - Search and sort your library by title or author.
 - Search text and the table of contents in reflowable formats, highlight passages, choose paginated or scrolled layout, and adjust font size, line spacing, and theme. Text-based PDFs also support text search, jumping to matching pages, and persistent passage highlights. TXT and Markdown support scrolling and the same display settings.
 - Add bookmarks and restore reading positions in supported formats. Your library, positions, highlights, bookmarks, and reading history stay on your device.
